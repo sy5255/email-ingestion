@@ -131,6 +131,7 @@ def list_file_archive_ready(
     limit: int,
     max_retry_count: int,
 ) -> List[Dict[str, Any]]:
+    """POP3에서 수집된 FILE_ARCHIVE 대기 행만 조회합니다."""
     if limit < 1:
         raise ValueError("FILE_ARCHIVE batch size must be at least 1")
 
@@ -141,7 +142,8 @@ def list_file_archive_ready(
             f"""
             SELECT *
             FROM `{MAIL_TABLE}`
-            WHERE route_type='FILE_ARCHIVE'
+            WHERE source_type='POP3'
+              AND route_type='FILE_ARCHIVE'
               AND status IN ('ROUTED','RETRY')
               AND retry_count < %s
             ORDER BY id
