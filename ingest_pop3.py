@@ -50,13 +50,13 @@ POP3_USE_SSL = os.getenv("POP3_USE_SSL", "true").strip().lower() in {
 POP3_TIMEOUT_SECONDS = int(os.getenv("POP3_TIMEOUT_SECONDS", "30"))
 
 # 사내 시간 단위 스케줄러의 기본 실행 주기:
-# 55분 동안 POP3/DB 큐를 반복 처리하고 5분 동안 유휴 상태로 대기한 뒤 종료합니다.
+# 55분 동안 POP3/DB 큐를 반복 처리하고 3분 동안 유휴 상태로 대기한 뒤 종료합니다.
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
 ACTIVE_WINDOW_SECONDS = int(
     os.getenv("INGESTION_ACTIVE_WINDOW_SECONDS", str(55 * 60))
 )
 REST_WINDOW_SECONDS = int(
-    os.getenv("INGESTION_REST_WINDOW_SECONDS", str(5 * 60))
+    os.getenv("INGESTION_REST_WINDOW_SECONDS", str(3 * 60))
 )
 RUN_ONCE = os.getenv("RUN_ONCE", "false").strip().lower() in {
     "1",
@@ -388,7 +388,7 @@ def _run_iteration(*, archive_only: bool, iteration: int) -> None:
     try:
         run_once(archive_only=archive_only)
     except Exception as exc:
-        # 일시적인 POP3/DB 오류가 발생해도 한 시간 실행 프로세스는 유지합니다.
+        # 일시적인 POP3/DB 오류가 발생해도 시간 단위 실행 프로세스는 유지합니다.
         print(f"[ERROR] iteration={iteration} -> {exc}")
 
 
@@ -451,7 +451,7 @@ def main() -> None:
 
     if not STOP_EVENT.is_set():
         # 마지막 처리 작업이 55분 경계를 넘긴 경우 휴식 시간을 줄여
-        # 전체 프로세스가 시작 후 60분을 기준으로 종료되도록 합니다.
+        # 전체 프로세스가 시작 후 58분을 기준으로 종료되도록 합니다.
         rest_seconds = max(0.0, shutdown_deadline - time.monotonic())
         print(
             f"[ACTIVE_WINDOW_FINISHED] iterations={iteration} "
