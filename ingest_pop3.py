@@ -4,6 +4,8 @@
 import argparse
 import os
 import poplib
+import signal
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -47,8 +49,16 @@ POP3_USE_SSL = os.getenv("POP3_USE_SSL", "true").strip().lower() in {
 }
 POP3_TIMEOUT_SECONDS = int(os.getenv("POP3_TIMEOUT_SECONDS", "30"))
 
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3600"))
-RUN_ONCE = os.getenv("RUN_ONCE", "true").strip().lower() in {
+# 사내 시간 단위 스케줄러의 기본 실행 주기:
+# 55분 동안 POP3/DB 큐를 반복 처리하고 5분 동안 유휴 상태로 대기한 뒤 종료합니다.
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
+ACTIVE_WINDOW_SECONDS = int(
+    os.getenv("INGESTION_ACTIVE_WINDOW_SECONDS", str(55 * 60))
+)
+REST_WINDOW_SECONDS = int(
+    os.getenv("INGESTION_REST_WINDOW_SECONDS", str(5 * 60))
+)
+RUN_ONCE = os.getenv("RUN_ONCE", "false").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -72,6 +82,12 @@ INGESTION_LOCK_NAME = os.getenv(
 INGESTION_LOCK_WAIT_SECONDS = int(os.getenv("INGESTION_LOCK_WAIT_SECONDS", "0"))
 
 VALID_FILE_ARCHIVE_MODES = {"REALTIME", "NIGHT", "DISABLED"}
+STOP_EVENT = threading.Event()
+
+
+def _handle_stop_signal(signum: int, _frame: Any) -> None:
+    print(f"[STOP_SIGNAL] signal={signum}")
+    STOP_EVENT.set()
 
 
 def _validate_settings() -> None:
@@ -98,6 +114,12 @@ def _validate_settings() -> None:
         raise RuntimeError("INGESTION_LOCK_NAME must contain 1 to 64 characters")
     if INGESTION_LOCK_WAIT_SECONDS < 0:
         raise RuntimeError("INGESTION_LOCK_WAIT_SECONDS must be 0 or greater")
+    if POLL_SECONDS < 1:
+        raise RuntimeError("POLL_SECONDS must be at least 1")
+    if ACTIVE_WINDOW_SECONDS < 1:
+        raise RuntimeError("INGESTION_ACTIVE_WINDOW_SECONDS must be at least 1")
+    if REST_WINDOW_SECONDS < 0:
+        raise RuntimeError("INGESTION_REST_WINDOW_SECONDS must be 0 or greater")
 
 
 def _connect_pop3():
@@ -361,6 +383,15 @@ def run_once(*, archive_only: bool = False) -> None:
         )
 
 
+def _run_iteration(*, archive_only: bool, iteration: int) -> None:
+    print(f"[ITERATION_START] iteration={iteration}")
+    try:
+        run_once(archive_only=archive_only)
+    except Exception as exc:
+        # 일시적인 POP3/DB 오류가 발생해도 한 시간 실행 프로세스는 유지합니다.
+        print(f"[ERROR] iteration={iteration} -> {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -378,15 +409,61 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    while True:
-        try:
-            run_once(archive_only=args.archive_only)
-        except Exception as exc:
-            print(f"[ERROR] {exc}")
+    signal.signal(signal.SIGTERM, _handle_stop_signal)
+    signal.signal(signal.SIGINT, _handle_stop_signal)
 
-        if RUN_ONCE:
+    _validate_settings()
+
+    if RUN_ONCE:
+        _run_iteration(archive_only=args.archive_only, iteration=1)
+        return
+
+    started_at = time.monotonic()
+    active_deadline = started_at + ACTIVE_WINDOW_SECONDS
+    shutdown_deadline = active_deadline + REST_WINDOW_SECONDS
+    iteration = 0
+
+    print(
+        "[SCHEDULER_START] "
+        f"active_window_seconds={ACTIVE_WINDOW_SECONDS} "
+        f"rest_window_seconds={REST_WINDOW_SECONDS} "
+        f"poll_seconds={POLL_SECONDS}"
+    )
+
+    while not STOP_EVENT.is_set():
+        active_remaining = active_deadline - time.monotonic()
+        if active_remaining <= 0:
             break
-        time.sleep(POLL_SECONDS)
+
+        iteration += 1
+        _run_iteration(archive_only=args.archive_only, iteration=iteration)
+
+        active_remaining = active_deadline - time.monotonic()
+        if active_remaining <= 0 or STOP_EVENT.is_set():
+            break
+
+        wait_seconds = min(POLL_SECONDS, active_remaining)
+        print(
+            f"[ITERATION_WAIT] iteration={iteration} "
+            f"next_poll_seconds={int(wait_seconds)}"
+        )
+        STOP_EVENT.wait(timeout=wait_seconds)
+
+    if not STOP_EVENT.is_set():
+        # 마지막 처리 작업이 55분 경계를 넘긴 경우 휴식 시간을 줄여
+        # 전체 프로세스가 시작 후 60분을 기준으로 종료되도록 합니다.
+        rest_seconds = max(0.0, shutdown_deadline - time.monotonic())
+        print(
+            f"[ACTIVE_WINDOW_FINISHED] iterations={iteration} "
+            f"rest_seconds={int(rest_seconds)}"
+        )
+        STOP_EVENT.wait(timeout=rest_seconds)
+
+    elapsed_seconds = time.monotonic() - started_at
+    print(
+        f"[SCHEDULER_FINISHED] iterations={iteration} "
+        f"elapsed_seconds={int(elapsed_seconds)}"
+    )
 
 
 if __name__ == "__main__":
