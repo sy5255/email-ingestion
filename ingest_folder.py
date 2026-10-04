@@ -1,4 +1,3 @@
-ingest_folder.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -17,10 +16,12 @@ from mail_routing import (
     load_enabled_rules,
     parse_mail_for_routing,
 )
+from ingest_pop3 import _decision_from_row
 from preprocess_core import process_raw_mail
 
 
 MAX_RETRY_COUNT = int(os.getenv("MAX_RETRY_COUNT", "3"))
+STALE_PROCESSING_MINUTES = int(os.getenv("STALE_PROCESSING_MINUTES", "15"))
 
 
 def make_pseudo_id(path: Path, raw: bytes) -> str:
@@ -142,6 +143,13 @@ def main(input_dir: str, save_root: str, version_tag: str) -> None:
             "No enabled rules exist in ae_llm_agent_mail_rule"
         )
 
+    recovered = repository.recover_stale_file_processing(
+        STALE_PROCESSING_MINUTES,
+        max_retry_count=MAX_RETRY_COUNT,
+    )
+    if recovered:
+        print(f"[RECOVERED] stale FILE_ARCHIVE rows={recovered}")
+
     counters = {
         "total": len(files),
         "new": 0,
@@ -166,6 +174,23 @@ def main(input_dir: str, save_root: str, version_tag: str) -> None:
 
             if existing is not None:
                 counters["existing"] += 1
+
+                # 이전 실행에서 저장이 끝나지 않은 FILE_ARCHIVE 행은 다시 저장
+                if (
+                    existing.get("route_type") == "FILE_ARCHIVE"
+                    and existing.get("status") in {"ROUTED", "RETRY"}
+                ):
+                    if _archive(
+                        repository=repository,
+                        row=existing,
+                        raw_mail=raw,
+                        decision=_decision_from_row(existing),
+                        save_root=out_root,
+                        fallback_version_tag=version_tag,
+                    ):
+                        counters["file_completed"] += 1
+                    else:
+                        counters["failed"] += 1
                 continue
 
             parsed = parse_mail_for_routing(raw)

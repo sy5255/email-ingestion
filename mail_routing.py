@@ -869,20 +869,29 @@ class MailRepository:
             cur.close()
             conn.close()
 
-    def recover_stale_file_processing(self, stale_minutes: int = 15) -> int:
+    def recover_stale_file_processing(
+        self,
+        stale_minutes: int = 15,
+        max_retry_count: int = 3,
+    ) -> int:
+        """
+        저장 도중 프로세스가 죽어 PROCESSING으로 남은 FILE_ARCHIVE 행을 되돌립니다.
+        죽은 것도 실패 1회로 세므로, 같은 메일이 계속 프로세스를 죽이면 FAILED로 확정됩니다.
+        """
         conn = connect(self.config)
         cur = conn.cursor()
         try:
             cur.execute(
                 f"""
                 UPDATE `{MAIL_TABLE}`
-                SET status='RETRY',
+                SET status=IF(retry_count+1 >= %s, 'FAILED', 'RETRY'),
+                    retry_count=retry_count+1,
                     last_error='Recovered stale FILE_ARCHIVE processing'
                 WHERE route_type='FILE_ARCHIVE'
                   AND status='PROCESSING'
                   AND updated_at < DATE_SUB(NOW(), INTERVAL %s MINUTE)
                 """,
-                (stale_minutes,),
+                (max_retry_count, stale_minutes),
             )
             count = cur.rowcount
             conn.commit()

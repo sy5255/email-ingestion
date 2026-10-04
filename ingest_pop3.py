@@ -210,7 +210,8 @@ def run_once() -> None:
         )
 
     recovered = repository.recover_stale_file_processing(
-        STALE_PROCESSING_MINUTES
+        STALE_PROCESSING_MINUTES,
+        max_retry_count=MAX_RETRY_COUNT,
     )
     if recovered:
         print(f"[RECOVERED] stale FILE_ARCHIVE rows={recovered}")
