@@ -1,7 +1,26 @@
+import types
 from email.message import EmailMessage
+from pathlib import Path
 
-import ingest_folder
 from mail_routing import MAIL_TABLE, connect
+
+
+def _load_ingest_folder():
+    """
+    ingest_folder.py 첫 줄의 파일명 표시(init 모드 마커)는 그대로 두고,
+    테스트에서는 그 줄을 건너뛰고 모듈로 불러옵니다.
+    """
+    path = Path(__file__).resolve().parents[1] / "ingest_folder.py"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if lines and lines[0].strip() == "ingest_folder.py":
+        lines[0] = "\n"  # 줄 번호 유지
+    module = types.ModuleType("ingest_folder")
+    module.__file__ = str(path)
+    exec(compile("".join(lines), str(path), "exec"), module.__dict__)
+    return module
+
+
+ingest_folder = _load_ingest_folder()
 
 
 def _write_eml(path):
