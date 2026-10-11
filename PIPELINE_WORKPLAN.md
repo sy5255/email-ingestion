@@ -5,6 +5,7 @@
 > 작업 브랜치: 모든 저장소 `claude/pipeline-state-tracking`
 > - email-ingestion은 **`agent/deferred-file-archive` 위에서** 작업합니다(2026-10-11 재구성).
 >   main 기준으로 작업했던 이전 기록은 `claude/pipeline-state-tracking-main-base`에 보관.
+> - request-pipeline은 **`claude/ae-llm-agent-mail-retry-h1vk3i` 위에서** 작업합니다(2026-10-11 재구성, 이전 기록은 같은 이름의 `-main-base` 브랜치).
 
 ## 1. 목표
 
@@ -153,12 +154,14 @@ WHERE id=…;
 - [x] P7-2 NIGHT 모드 자동 저장 시간대: 서버 시각 04:00~05:00 처리 회차는 수집 후 저장 대기열까지 처리 (`FILE_ARCHIVE_AUTO_START_HOUR`/`_END_HOUR`)
 - [x] P7-3 테스트(가짜 POP3 + MySQL) 18건 통과, README·`.env.example` 갱신, request-pipeline 연계 문서를 실제 동작 기준으로 수정
 - [~] P7-4 `ingest_folder.py` 첫 줄 init 모드 마커: main에는 있으나 deferred 브랜치에는 없음 → **사용자 확인 필요**
+- [x] P7-5 request-pipeline 작업 브랜치를 `claude/ae-llm-agent-mail-retry-h1vk3i` 기준으로 재구성(DB 기본값·연계 문서·작업계획서 이식), 테스트 54건 통과
 
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
 | 2026-10-04 | P0-1 | 전체 | 작업계획서 배포 |
 | 2026-10-04 | P1-1~P1-6 | rag-preparer | 업로드 실패 추적·원자적 출력·hash 버그 수정, 테스트 `tests/` 추가 |
+| 2026-10-11 | P7-5 | request-pipeline | 브랜치를 `claude/ae-llm-agent-mail-retry-h1vk3i` 기준으로 재구성, 테스트 54건 통과 |
 | 2026-10-11 | P7-0~P7-3 | email-ingestion, request-pipeline | 브랜치를 `agent/deferred-file-archive` 기준으로 재구성, P4 변경 이식, 04~05시 자동 저장 추가, 테스트 18건 통과 |
 | 2026-10-11 | P3-14, P5-13 | doc-parser, rag-preparer | 파일 기준 백필 스크립트 2종(dry-run 기본, `--apply`), 테스트 doc-parser 32건·rag-preparer 16건 통과 |
 | 2026-10-11 | P3-13 | doc-parser | 이관 매칭 개선(경로 끝·uidl 해시), 요약 출력·보고서, 기존 export 채택 안전장치, 테스트 4건 추가(총 28건) |
@@ -342,8 +345,7 @@ WHERE id = …;
   PIPELINE_TEST_MYSQL_HOST=... PIPELINE_TEST_MYSQL_PORT=3306 PIPELINE_TEST_MYSQL_USER=... PIPELINE_TEST_MYSQL_PASSWORD=... \
     python -m pytest -q tests
   ```
-  기대 결과: doc-parser 23개 · rag-preparer 13개 · email-ingestion 6개 통과.
-  request-pipeline 기존 테스트 3개(`test_run_recovery.py`)는 main에서도 실패하는 기존 문제입니다.
+  기대 결과: doc-parser 32개 · rag-preparer 16개 · email-ingestion 18개 · request-pipeline 54개 통과.
 
 ### D-1. email-ingestion
 
