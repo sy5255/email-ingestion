@@ -869,6 +869,57 @@ class MailRepository:
             cur.close()
             conn.close()
 
+    def list_pending_file_archives(
+        self,
+        mailbox_key: str,
+        source_type: str = "POP3",
+    ) -> List[Dict[str, Any]]:
+        """파일 저장 대기 중인 FILE_ARCHIVE 행(ROUTED/RETRY). FAILED는 제외합니다."""
+        conn = connect(self.config)
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM `{MAIL_TABLE}`
+                WHERE route_type='FILE_ARCHIVE'
+                  AND status IN ('ROUTED','RETRY')
+                  AND source_type=%s
+                  AND mailbox_key=%s
+                ORDER BY id
+                """,
+                (source_type, mailbox_key),
+            )
+            return cur.fetchall() or []
+        finally:
+            cur.close()
+            conn.close()
+
+    def mark_source_missing(self, request_id: int, reason: str) -> bool:
+        """
+        저장 시점에 POP3에서 원본이 사라진 메일(발송 취소·재전송 등)을 종료 처리합니다.
+        파일은 저장하지 않습니다.
+        """
+        conn = connect(self.config)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE `{MAIL_TABLE}`
+                SET status='SOURCE_MISSING', last_error=%s
+                WHERE id=%s
+                  AND route_type='FILE_ARCHIVE'
+                  AND status IN ('ROUTED','RETRY')
+                """,
+                (reason[:4000], request_id),
+            )
+            changed = cur.rowcount == 1
+            conn.commit()
+            return changed
+        finally:
+            cur.close()
+            conn.close()
+
     def recover_stale_file_processing(
         self,
         stale_minutes: int = 15,
