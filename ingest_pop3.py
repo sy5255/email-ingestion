@@ -74,6 +74,11 @@ FILE_ARCHIVE_SOURCE_MISSING_GRACE_MINUTES = int(
     os.getenv("FILE_ARCHIVE_SOURCE_MISSING_GRACE_MINUTES", "10")
 )
 FILE_ARCHIVE_MODE = os.getenv("FILE_ARCHIVE_MODE", "NIGHT").strip().upper()
+# NIGHT 모드 자동 저장 시간대(서버 로컬 시각, 시작 시 포함 ~ 끝 시 미포함). 기본 04:00 ~ 05:00
+# 이 시간대의 일반 실행(python ingest_pop3.py)은 수집 후 FILE_ARCHIVE 저장 대기열까지 처리합니다.
+# 시작과 끝을 같게 두면 자동 저장을 끕니다.
+FILE_ARCHIVE_AUTO_START_HOUR = int(os.getenv("FILE_ARCHIVE_AUTO_START_HOUR", "4"))
+FILE_ARCHIVE_AUTO_END_HOUR = int(os.getenv("FILE_ARCHIVE_AUTO_END_HOUR", "5"))
 
 INGESTION_LOCK_NAME = os.getenv(
     "INGESTION_LOCK_NAME",
@@ -104,6 +109,12 @@ def _validate_settings() -> None:
         raise RuntimeError(
             "FILE_ARCHIVE_MODE must be REALTIME, NIGHT, or DISABLED"
         )
+    for name, hour in (
+        ("FILE_ARCHIVE_AUTO_START_HOUR", FILE_ARCHIVE_AUTO_START_HOUR),
+        ("FILE_ARCHIVE_AUTO_END_HOUR", FILE_ARCHIVE_AUTO_END_HOUR),
+    ):
+        if not 0 <= hour <= 23:
+            raise RuntimeError(f"{name} must be between 0 and 23")
     if FILE_ARCHIVE_BATCH_SIZE < 1:
         raise RuntimeError("FILE_ARCHIVE_BATCH_SIZE must be at least 1")
     if FILE_ARCHIVE_SOURCE_MISSING_GRACE_MINUTES < 0:
@@ -120,6 +131,20 @@ def _validate_settings() -> None:
         raise RuntimeError("INGESTION_ACTIVE_WINDOW_SECONDS must be at least 1")
     if REST_WINDOW_SECONDS < 0:
         raise RuntimeError("INGESTION_REST_WINDOW_SECONDS must be 0 or greater")
+
+
+def _now() -> datetime:
+    return datetime.now()
+
+
+def in_auto_archive_window(now: datetime) -> bool:
+    """서버 시각이 자동 저장 시간대(시작 시 포함 ~ 끝 시 미포함)인지. 자정을 넘는 구간도 지원."""
+    start, end = FILE_ARCHIVE_AUTO_START_HOUR, FILE_ARCHIVE_AUTO_END_HOUR
+    if start == end:
+        return False
+    if start < end:
+        return start <= now.hour < end
+    return now.hour >= start or now.hour < end
 
 
 def _connect_pop3():
@@ -228,7 +253,8 @@ def _process_file_archive_queue(
     SAVE_ROOT.mkdir(parents=True, exist_ok=True)
 
     recovered = repository.recover_stale_file_processing(
-        STALE_PROCESSING_MINUTES
+        STALE_PROCESSING_MINUTES,
+        max_retry_count=MAX_RETRY_COUNT,
     )
     if recovered:
         print(f"[RECOVERED] stale FILE_ARCHIVE rows={recovered}")
@@ -350,7 +376,22 @@ def run_once(*, archive_only: bool = False) -> None:
                     counters=counters,
                 )
 
-            should_archive = archive_only or FILE_ARCHIVE_MODE == "REALTIME"
+            auto_archive = (
+                not archive_only
+                and FILE_ARCHIVE_MODE == "NIGHT"
+                and in_auto_archive_window(_now())
+            )
+            should_archive = (
+                archive_only
+                or FILE_ARCHIVE_MODE == "REALTIME"
+                or auto_archive
+            )
+            if auto_archive:
+                print(
+                    "[FILE_ARCHIVE_AUTO] auto archive window "
+                    f"{FILE_ARCHIVE_AUTO_START_HOUR:02d}:00-"
+                    f"{FILE_ARCHIVE_AUTO_END_HOUR:02d}:00"
+                )
             if should_archive:
                 _process_file_archive_queue(
                     server=server,
@@ -362,7 +403,9 @@ def run_once(*, archive_only: bool = False) -> None:
             elif FILE_ARCHIVE_MODE == "NIGHT":
                 print(
                     "[FILE_ARCHIVE_DEFERRED] FILE_ARCHIVE rows remain ROUTED "
-                    "until ingest_pop3.py --archive-only runs"
+                    "until ingest_pop3.py --archive-only runs or the auto archive "
+                    f"window {FILE_ARCHIVE_AUTO_START_HOUR:02d}:00-"
+                    f"{FILE_ARCHIVE_AUTO_END_HOUR:02d}:00"
                 )
             else:
                 print(

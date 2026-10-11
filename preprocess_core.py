@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import re
 import json
 import base64
@@ -356,6 +357,21 @@ def _remove_tree(p: Path) -> None:
         p.rmdir()
     except Exception:
         pass
+
+
+def _partial_folder(mail_folder: Path) -> Path:
+    return mail_folder.with_name(mail_folder.name + ".partial")
+
+
+def _is_complete_mail_folder(mail_folder: Path) -> bool:
+    """게시가 끝난 메일 폴더인지: .enriched.eml이 있어야 완성본으로 본다."""
+    return any(p.is_file() for p in mail_folder.glob("*.enriched.eml"))
+
+
+def _publish_folder(work_folder: Path, mail_folder: Path) -> None:
+    if mail_folder.exists():
+        _remove_tree(mail_folder)
+    os.replace(work_folder, mail_folder)
 
 
 def compute_raw_hash_sha256(raw_mail: bytes) -> str:
@@ -988,6 +1004,15 @@ def process_raw_mail(
 
     mail_folder = ver_dir / f"{dt_str}__{subj_safe}__{suffix}"
 
+    # 이전 실행이 저장 도중 끊겨 .enriched.eml 없이 남은 폴더는 완성본이 아니므로 다시 만든다.
+    # (원자적 게시 도입 전에 생긴 불완전 폴더 대응)
+    if mail_folder.exists() and not _is_complete_mail_folder(mail_folder):
+        append_log(
+            ver_dir / "skipped.log",
+            f"[{ts}] reason=incomplete_rebuild | source_id={source_id} | folder={mail_folder}"
+        )
+        _remove_tree(mail_folder)
+
     if mail_folder.exists():
         if overwrite_policy == "skip":
             skipped_log = ver_dir / "skipped.log"
@@ -1046,10 +1071,14 @@ def process_raw_mail(
             append_jsonl(manifest_path, rec)
             return rec
 
-    mail_folder.mkdir(parents=True, exist_ok=True)
+    # 4-1) 작업은 .partial 폴더에서 하고, 모두 쓴 뒤 rename으로 게시한다.
+    #      중간에 끊기면 .partial만 남고 최종 폴더는 생기지 않는다.
+    work_folder = _partial_folder(mail_folder)
+    _remove_tree(work_folder)
+    work_folder.mkdir(parents=True, exist_ok=True)
 
     # 5) attachments 폴더 생성
-    attach_dir = mail_folder / "attachments"
+    attach_dir = work_folder / "attachments"
     attach_dir.mkdir(parents=True, exist_ok=True)
 
     edm_urls: List[str] = []
@@ -1200,11 +1229,11 @@ def process_raw_mail(
     enriched_msg = enrich_email_with_prefix(msg_for_enrich, prefix)
 
     enriched_eml_path = mail_folder / f"{subj_safe}.enriched.eml"
-    enriched_eml_path.write_bytes(enriched_msg.as_bytes())
+    (work_folder / enriched_eml_path.name).write_bytes(enriched_msg.as_bytes())
 
     # 8) txt 저장
     txt_path = mail_folder / f"{subj_safe}.txt"
-    with open(txt_path, "w", encoding="utf-8") as f:
+    with open(work_folder / txt_path.name, "w", encoding="utf-8") as f:
         f.write("[MAIL]\n")
         f.write(f"From   : {sender}\n")
         f.write(f"Subject: {subject_str}\n")
@@ -1239,6 +1268,9 @@ def process_raw_mail(
         f.write(body_text if body_text else "(본문 없음/추출 실패)")
         f.write("\n\n[ATTACHMENTS]\n")
         f.write(f"count: {attachment_saved}\n")
+
+    # 8-1) 게시: .partial → 최종 폴더
+    _publish_folder(work_folder, mail_folder)
 
     # 9) manifest 기록
     rec = {

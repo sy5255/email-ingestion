@@ -14,6 +14,21 @@ FILE_ARCHIVE_MODE=NIGHT
 - `NIGHT`: 수집 시 DB에만 `ROUTED`로 적재하고 야간 실행에서 저장합니다.
 - `DISABLED`: DB 라우팅만 수행합니다.
 
+### NIGHT 모드 자동 저장 시간대
+
+`python ingest_pop3.py`(일반 실행)라도 서버 시각이 **04:00 ~ 05:00**(05:00 미포함)인 처리 회차에서는
+신규 수집 후 FILE_ARCHIVE 저장 대기열(`ROUTED`/`RETRY`)까지 처리합니다.
+1시간 주기 스케줄러에 `python ingest_pop3.py`만 등록해도 매일 04시대에 파일이 저장됩니다.
+
+```env
+FILE_ARCHIVE_AUTO_START_HOUR=4
+FILE_ARCHIVE_AUTO_END_HOUR=5
+```
+
+- 시작과 끝을 같게 두면 자동 저장을 끕니다. 자정을 넘는 구간(예: 23 → 1)도 지원합니다.
+- 시간과 관계없이 바로 저장하려면 `python ingest_pop3.py --archive-only`를 사용합니다.
+- `RETRY`는 일시 오류 후 재시도 대기 상태라 저장 대상이고, `FAILED`(재시도 횟수 초과)는 제외됩니다.
+
 ## 잡스케줄러
 
 주기 수집:
