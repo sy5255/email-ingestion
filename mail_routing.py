@@ -561,10 +561,14 @@ def _match_text_condition(text: str, condition: Dict[str, Any]) -> Optional[Dict
     candidate_source = source[: int(prefix_len)] if prefix_len is not None else source
     searchable = candidate_source if case_sensitive else candidate_source.lower()
 
+    # Every value is tried and the one found earliest wins (then the longer one), so which
+    # keyword a rule reports does not depend on the order its values were written in.
+    best: Optional[Dict[str, Any]] = None
     for raw_value in values:
         value = raw_value if case_sensitive else raw_value.lower()
         matched = False
         position = -1
+        length = len(value)
 
         if operator == "contains_any":
             position = searchable.find(value)
@@ -580,20 +584,22 @@ def _match_text_condition(text: str, condition: Dict[str, Any]) -> Optional[Dict
             match = re.search(raw_value, candidate_source, flags)
             matched = match is not None
             position = match.start() if match else -1
+            length = (match.end() - match.start()) if match else 0
         else:
             raise ValueError(f"Unsupported route operator: {operator}")
 
-        if matched:
-            return {
+        if matched and (best is None or (position, -length) < (best["position"], -best["match_length"])):
+            best = {
                 "matched": True,
                 "operator": operator,
                 "matched_value": raw_value,
                 "position": position,
+                "match_length": length,
                 "evaluated_text": candidate_source,
                 "prefix_len": prefix_len,
             }
 
-    return None
+    return best
 
 
 def _evaluate_rule(mail: ParsedRouteMail, rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -653,6 +659,27 @@ def _evaluate_rule(mail: ParsedRouteMail, rule: Dict[str, Any]) -> Optional[Dict
     }
 
 
+def _subject_position(match: Dict[str, Any]) -> Optional[int]:
+    subject = (match.get("match_detail") or {}).get("subject") or {}
+    return subject.get("position") if subject.get("matched") else None
+
+
+def _rank(match: Dict[str, Any]) -> tuple:
+    """(priority, subject keyword position, -keyword length, rule id): lower ranks first.
+
+    A rule with no subject condition sorts after every subject match of its priority.
+    """
+    subject = (match.get("match_detail") or {}).get("subject") or {}
+    position = subject.get("position") if subject.get("matched") else None
+    length = int(subject.get("match_length") or len(str(subject.get("matched_value") or ""))) if subject else 0
+    return (
+        int(match["priority"]),
+        position if position is not None else 10 ** 9,
+        -length,
+        int(match["rule_id"]),
+    )
+
+
 def classify_mail(mail: ParsedRouteMail, rules: List[Dict[str, Any]]) -> RouteDecision:
     matches = []
     for rule in rules:
@@ -675,9 +702,16 @@ def classify_mail(mail: ParsedRouteMail, rules: List[Dict[str, Any]]) -> RouteDe
             matched_rules=[],
         )
 
-    matches.sort(key=lambda item: (item["priority"], item["rule_id"]))
+    # Priority first. Among rules of the same priority the one whose subject keyword comes
+    # first in the subject wins, then the longer keyword, and only a tie on all three is a
+    # CONFLICT. One mailbox now collects several departments' reports, told apart only by
+    # the subject keyword, and "fa report" sits inside "inline fa report": by priority alone
+    # every [Inline FA Report] mail would match both rules and be dropped as a CONFLICT.
+    #   "[inline fa report][s3fa report] ..."            -> inline fa report (position 1)
+    #   "[s3fa report] 결과 공유 FW:[inline fa report]"  -> s3fa report (position 1)
+    matches.sort(key=_rank)
     best_priority = matches[0]["priority"]
-    best_matches = [item for item in matches if item["priority"] == best_priority]
+    best_matches = [item for item in matches if _rank(item)[:3] == _rank(matches[0])[:3]]
 
     if len(best_matches) != 1:
         keys = ", ".join(item["rule_key"] for item in best_matches)
@@ -688,7 +722,7 @@ def classify_mail(mail: ParsedRouteMail, rules: List[Dict[str, Any]]) -> RouteDe
             rule_key=None,
             rule_version=None,
             priority=best_priority,
-            reason=f"Multiple rules matched at the same priority: {keys}",
+            reason=f"Multiple rules matched at the same priority and subject position: {keys}",
             matched_value=None,
             match_detail={},
             action_config={},
@@ -696,6 +730,7 @@ def classify_mail(mail: ParsedRouteMail, rules: List[Dict[str, Any]]) -> RouteDe
         )
 
     selected = best_matches[0]
+    position = _subject_position(selected)
     return RouteDecision(
         route_type=selected["route_type"],
         route_case=selected["route_case"],
@@ -703,7 +738,11 @@ def classify_mail(mail: ParsedRouteMail, rules: List[Dict[str, Any]]) -> RouteDe
         rule_key=selected["rule_key"],
         rule_version=selected["rule_version"],
         priority=selected["priority"],
-        reason=f"Selected rule {selected['rule_key']} at priority {selected['priority']}",
+        reason=(
+            f"Selected rule {selected['rule_key']} at priority {selected['priority']}"
+            + (f", subject keyword at position {position}" if position is not None else "")
+            + (f" ahead of {len(matches) - 1} other matching rule(s)" if len(matches) > 1 else "")
+        ),
         matched_value=selected["matched_value"],
         match_detail=selected["match_detail"],
         action_config=selected["action_config"],
