@@ -312,7 +312,8 @@ def ensure_schema(config: DBConfig) -> None:
         },
         "banned_before_match": [
             "수신처", "수신인", "수선처", "rcp", "회신", "(파일 권한)",
-            "fw", "re", "측정", "의뢰", "참고", "회의", "확인", "제안",
+            # "re:" not "re" (see preprocess_core.BANNED_TOKENS); compared lower-cased.
+            "fw", "re:", "RE:", "측정", "의뢰", "참고", "회의", "확인", "제안",
             "정리", "의견", "요청", "감사", "일정", "회의록", "문의",
             "내부공유", "내부 공유", "내부 선공유", "내부선공유",
             "내용 수정", "내용수정", "선공유", "부탁", "fb", "께", "님",
