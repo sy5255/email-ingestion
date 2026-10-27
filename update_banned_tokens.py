@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replace the banned token "re" with "re:" / "RE:" in the stored routing rules.
+"""Replace the banned tokens "re" / "fw" with "re:" "RE:" / "fw:" "FW:" in the stored routing rules.
 
 The rules live in ae_llm_agent_mail_rule, and ensure_schema() seeds them with INSERT IGNORE,
 so changing the defaults in mail_routing.py does not touch rules that already exist. This
@@ -19,17 +19,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mail_routing import RULE_TABLE, DBConfig, _json_value, connect
 
-OLD = "re"
-NEW = ["re:", "RE:"]
+# bare token (compared lower-cased) -> what replaces it, in place
+REPLACE = {"re": ["re:", "RE:"], "fw": ["fw:", "FW:"]}
 
 
 def updated_tokens(tokens: List[Any]) -> Optional[List[Any]]:
-    """The list with every bare "re" replaced by NEW, or None when it has none."""
-    if not any(str(t).strip().lower() == OLD for t in tokens or []):
+    """The list with every bare "re"/"fw" replaced, or None when it has none."""
+    if not any(str(t).strip().lower() in REPLACE for t in tokens or []):
         return None
     out: List[Any] = []
     for token in tokens:
-        for item in (NEW if str(token).strip().lower() == OLD else [token]):
+        for item in REPLACE.get(str(token).strip().lower(), [token]):
             if item not in out:
                 out.append(item)
     return out
@@ -58,11 +58,13 @@ def main(argv=None) -> int:
         cur.execute(f"SELECT id, rule_key, rule_version, match_config_json FROM `{RULE_TABLE}` ORDER BY id")
         changes = plan(cur.fetchall())
         if not changes:
-            print('No rule has the banned token "re". Nothing to do.')
+            print('No rule has the bare banned tokens "re" or "fw". Nothing to do.')
             return 0
         for row, config in changes:
+            before = (_json_value(row.get("match_config_json")) or {}).get("banned_before_match") or []
+            replaced = [t for t in before if str(t).strip().lower() in REPLACE]
             print(f"- {row['rule_key']} (id={row['id']}, version {row['rule_version']} -> {int(row['rule_version']) + 1}): "
-                  f'"re" -> {NEW}')
+                  + ", ".join(f'"{t}" -> {REPLACE[str(t).strip().lower()]}' for t in replaced))
         if not args.apply:
             print("Dry run: nothing written. Run with --apply to write.")
             return 0

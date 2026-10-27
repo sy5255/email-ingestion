@@ -7,7 +7,7 @@ from mail_routing import ParsedRouteMail, classify_mail
 
 BANNED = [
     "수신처", "수신인", "수선처", "rcp", "회신", "(파일 권한)",
-    "fw", "re:", "RE:", "측정", "의뢰", "참고", "회의", "확인", "제안",
+    "fw:", "FW:", "re:", "RE:", "측정", "의뢰", "참고", "회의", "확인", "제안",
 ]
 
 
@@ -111,6 +111,12 @@ def test_priority_still_comes_first():
 def test_a_reply_prefix_is_banned_in_either_case():
     for subject in ("RE: [Inline FA Report] EUV", "Re: [S3FA Report] x", "re:[PKG Report] y"):
         assert _site(subject)[0] == "IGNORE", subject
+
+
+def test_a_forward_prefix_is_banned_in_either_case():
+    for subject in ("FW: [Inline FA Report] EUV", "Fw:[S3FA Report] x"):
+        assert _site(subject)[0] == "IGNORE", subject
+    assert _site("[FW 업데이트 이력][PKG Report] x")[1] == "PKG", "fw inside text is no longer banned"
 
 
 def test_re_inside_a_word_no_longer_blocks_the_keyword():

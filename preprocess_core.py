@@ -36,10 +36,11 @@ SUBJECT_KEYWORDS = [
 PREFIX_LEN = 50
 
 BANNED_TOKENS = (
-    # "re:" not "re": the bare "re" matched inside "report", "pre", "review" …, so any
-    # keyword that followed one of those was refused. Compared lower-cased, so "RE:" and
-    # "Re:" are caught too; both spellings are listed so the intent reads plainly.
-    "수신처", "수신인", "수선처", "rcp", "회신", "(파일 권한)", "fw", "re:", "RE:", "측정", "의뢰", "참고", "회의", "확인",
+    # "re:" and "fw:" rather than "re" and "fw": the bare tokens matched inside words
+    # ("report", "pre", "review" …), so any keyword that followed one of those was refused.
+    # Compared lower-cased, so "RE:", "Re:", "FW:", "Fw:" are caught too; both spellings
+    # are listed so the intent reads plainly.
+    "수신처", "수신인", "수선처", "rcp", "회신", "(파일 권한)", "fw:", "FW:", "re:", "RE:", "측정", "의뢰", "참고", "회의", "확인",
     "제안", "정리", "의견", "요청", "감사", "일정", "회의록", "문의", "내부공유", "내부 공유", "내부 선공유",
     "내부선공유", "내용 수정", "내용수정", "선공유", "부탁", "fb", "께", "님", "fib", "tem", "img", "image",
     "pie", "raw", "t-v", "v-t", "planar", "vertical", "ct", "demo", "cut",
