@@ -88,3 +88,42 @@ cd /config/work/request-pipeline && python run_pipeline.py
 - `request-pipeline`: `API_ANALYSIS` 처리와 결과 메일 발송
 
 병렬 실행 시 `request-pipeline`의 `POP3_COLLECTION_ENABLED=false`를 유지해야 합니다. POP3 수집은 `email-ingestion` 한 곳에서만 수행해야 UIDL 중복 삽입 경쟁과 불필요한 POP3 연결을 피할 수 있습니다.
+
+## S3 저장 (STORE 단계)
+
+저장이 끝난 FILE_ARCHIVE 메일 폴더를 S3 드라이브에 올립니다. 메일 저장 자체는 지금처럼
+로컬 sharedworkspace에 하고, 이 잡이 그 결과를 올리고 대조합니다. 저장 규칙은 report-search의
+`docs/s3_storage_layout.md`입니다.
+
+```bash
+pip install boto3==1.38.41 # 처음 한 번 (report-search와 같은 버전)
+python store_to_s3.py      # 1시간 주기, 1회 실행 후 종료 (다른 잡과 같은 GET_LOCK + 시간 예산 50분)
+```
+
+```env
+S3_STORE_ENABLED=true
+S3_ENDPOINT_URL=http://s3.dataplatform.samsungds.net:9020
+S3_REGION=KOR-HS
+S3_ACCESS_KEY_ID=…
+S3_SECRET_ACCESS_KEY=…
+S3_BUCKET=Analysis_Report
+```
+
+- 대상: `route_type='FILE_ARCHIVE' AND status='COMPLETED'`인 메일 전부. 앞으로 들어오는 메일과 함께
+  지금까지 저장된 메일도 차례로 올립니다(이관). 분류되지 않은 메일은 올리지 않습니다.
+- 키: `{site}/sharedworkspace/mail_archive/{report_kind}/{ver}/{메일 폴더}/…`. site는 규칙 action의
+  `site`(없으면 `STORE_DEFAULT_SITE`, 기본 IFA), report_kind는 메일 폴더의 첫 단계입니다.
+- 메일 1건마다: 폴더의 파일 전부 + 원본 `raw/{raw_hash}.raw.eml` + 버전 `config.json` + 새 `meta.json`을
+  올리고, 파일마다 크기와 MD5(ETag)로 대조한 뒤, 마지막에 `_COMPLETE`(파일 목록·sha256)를 올립니다.
+- 진행 상태는 `ae_llm_agent_pipeline_task`의 `stage='STORE'`에 남습니다. 메일 표에는 칼럼을 더하지 않습니다.
+  `output_ref`=S3 폴더 키, `output_hash`=`_COMPLETE` sha256, `checkpoint_json`=부서·레포트 종류·첨부 목록.
+- 로컬 폴더가 없으면 영구 실패(FAILED), S3 접속 오류는 재시도(RETRY, 지수 backoff)입니다.
+- `S3_STORE_ENABLED`가 꺼져 있거나 S3 설정이 빠지면 아무것도 하지 않고 끝납니다.
+
+현황:
+
+```sql
+SELECT status, COUNT(*) FROM ae_llm_agent_pipeline_task WHERE stage='STORE' GROUP BY status;
+SELECT mail_id, attempt, last_error FROM ae_llm_agent_pipeline_task
+WHERE stage='STORE' AND status IN ('RETRY','FAILED') ORDER BY updated_at DESC LIMIT 20;
+```

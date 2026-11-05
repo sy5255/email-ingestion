@@ -322,6 +322,10 @@ def ensure_schema(config: DBConfig) -> None:
         ],
     }
     file_action = {
+        # Department and report kind of the S3 copy (store_to_s3.py, docs/s3_storage_layout.md
+        # in report-search). Rules stored before these keys default to site IFA.
+        "site": "IFA",
+        "report_kind": "inline_fa_report",
         "save_root_subdir": "inline_fa_report",
         "version_tag": "ver3",
         "overwrite_policy": "skip",

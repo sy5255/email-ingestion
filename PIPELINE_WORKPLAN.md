@@ -160,9 +160,21 @@ WHERE id=…;
 - [~] P7-4 `ingest_folder.py` 첫 줄 init 모드 마커: main에는 있으나 deferred 브랜치에는 없음 → **사용자 확인 필요**
 - [x] P7-5 request-pipeline 작업 브랜치를 `claude/ae-llm-agent-mail-retry-h1vk3i` 기준으로 재구성(DB 기본값·연계 문서·작업계획서 이식), 테스트 54건 통과
 
+### Phase 8. S3 저장 (report-search 계획 E2·E5)
+> 저장 규칙: report-search `docs/s3_storage_layout.md`. 메일 저장은 지금처럼 로컬에 하고, 새 단계 `STORE`가 결과를 S3에 올립니다.
+- [x] P8-1 email-ingestion `store_to_s3.py`: FILE_ARCHIVE COMPLETED 메일 → `STORE` 작업(seed) → 메일 폴더·원본 eml·버전 config.json·`meta.json` 업로드 → 크기·MD5(ETag, 아니면 sha256) 대조 → 마지막에 `_COMPLETE` → COMPLETED(`output_ref`=S3 폴더 키, `checkpoint_json`=부서·레포트 종류·첨부 목록). 메일 표 칼럼 추가 없음
+- [x] P8-2 `pipeline_state.py` 사본을 email-ingestion에도 둠(3개 저장소 동일 사본)
+- [x] P8-3 규칙 action에 `site`·`report_kind`(seed 규칙: IFA / inline_fa_report). 예전 규칙은 site 기본값 IFA
+- [x] P8-4 테스트(moto S3 + MariaDB) 7건, 실제 HTTP S3(moto 서버, 버킷 `Analysis_Report` path 방식)로 `python store_to_s3.py` 확인
+- [~] P8-5 개발 서버에서 `S3_STORE_ENABLED=true`로 1회 실행·확인 후 스케줄러에 1시간 주기 등록 — **사용자**
+- [ ] P8-6 doc-parser가 S3에서 읽고 S3에 씀(E3), 문서 목록 표 직접 기록
+- [ ] P8-7 rag-preparer가 S3에서 읽고 S3에 씀(E4), 같은 제목은 최신 메일만 검색되게
+- [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
+
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-05 | P8-1~P8-4 | email-ingestion | S3 저장 STORE 단계(`store_to_s3.py`), pipeline_state 사본, 규칙 action site·report_kind, 테스트 39건 통과 |
 | 2026-10-04 | P0-1 | 전체 | 작업계획서 배포 |
 | 2026-10-04 | P1-1~P1-6 | rag-preparer | 업로드 실패 추적·원자적 출력·hash 버그 수정, 테스트 `tests/` 추가 |
 | 2026-10-12 | P6-8 | rag-preparer | 용어 승격 `updated_at` 기록, 용어 인덱스 사용 중지, 승격 잡 1시간 주기, 테스트 22건 통과 |
