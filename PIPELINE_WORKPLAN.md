@@ -167,6 +167,8 @@ WHERE id=…;
 - [x] P8-3 규칙 action에 `site`·`report_kind`(seed 규칙: IFA / inline_fa_report). 예전 규칙은 site 기본값 IFA
 - [x] P8-4 테스트(moto S3 + MariaDB) 7건, 실제 HTTP S3(moto 서버, 버킷 `Analysis_Report` path 방식)로 `python store_to_s3.py` 확인
 - [x] P8-5 `ingest_pop3.py`가 파일을 저장하는 회차(04~05시 자동 저장, `--archive-only`, REALTIME)마다 저장 직후 업로드(회차당 `STORE_BUDGET_PER_RUN_SEC`, 기본 300초). 잡 추가 등록 불필요, S3 오류는 수집을 멈추지 않음. 테스트 4건 추가(총 43건)
+- [x] P8-5a S3 장애 대비: 업로드 전 S3 접속 확인(죽어 있으면 아무 작업도 잡지 않음), 도중 끊김은 시도 횟수 없이 RETRY로 반납, 재시도 `STORE_MAX_ATTEMPT`(기본 50), 영구 실패가 아닌 FAILED는 `STORE_REVIVE_HOURS`(기본 20시간) 뒤 다음 회차에서 되살림 → 다음 날 04시 회차에 자동 재업로드
+- [x] P8-5c 로컬 용량: `LOCAL_MAIL_RETENTION`(keep 기본 / after_parse / after_store). 지우기 전 `_COMPLETE`와 파일별 sha256을 S3에서 다시 대조. 로컬 폴더가 없는 메일의 STORE는 S3 `_COMPLETE`로 완료 처리. report-search Curator는 로컬 첨부 폴더가 없으면 STORE 기록에서 이미지 목록을 읽음. 테스트 7건 추가(총 50건)
 - [~] P8-5b 개발 서버에서 `S3_STORE_ENABLED=true` + S3 설정 후 `RUN_ONCE=true python ingest_pop3.py --archive-only`로 확인 — **사용자**
 - [ ] P8-6 doc-parser가 S3에서 읽고 S3에 씀(E3), 문서 목록 표 직접 기록
 - [ ] P8-7 rag-preparer가 S3에서 읽고 S3에 씀(E4), 같은 제목은 최신 메일만 검색되게
@@ -175,6 +177,7 @@ WHERE id=…;
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-05 | P8-5a·P8-5c | email-ingestion, report-search | S3 장애 시 다음 날 재업로드, 로컬 사본 삭제 옵션(LOCAL_MAIL_RETENTION), Curator 이미지 목록 대체 경로. 테스트 50건 통과 |
 | 2026-11-05 | P8-5 | email-ingestion | 04시 저장 회차에 S3 업로드 연결(`ingest_pop3.py`), 테스트 43건 통과 |
 | 2026-11-05 | P8-1~P8-4 | email-ingestion | S3 저장 STORE 단계(`store_to_s3.py`), pipeline_state 사본, 규칙 action site·report_kind, 테스트 39건 통과 |
 | 2026-10-04 | P0-1 | 전체 | 작업계획서 배포 |

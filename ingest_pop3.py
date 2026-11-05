@@ -196,12 +196,16 @@ def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None
         return
     if result.get("disabled"):
         return
+    if result.get("s3_unreachable") and len(result) == 1:
+        counters["s3_unreachable"] += 1
+        print("[S3_STORE_UNREACHABLE] S3 not reachable; nothing claimed, the next pass tries again")
+        return
     if result.get("misconfigured"):
         counters["s3_store_error"] += 1
         print("[S3_STORE_ERROR] S3_STORE_ENABLED=true but S3 settings are missing")
         return
-    for key in ("stored", "reused", "retry", "failed"):
-        counters[f"s3_{key}"] += int(result.get(key, 0) or 0)
+    for key in ("stored", "reused", "retry", "failed", "s3_unreachable", "local_deleted"):
+        counters[key if key.startswith("s3_") else f"s3_{key}"] += int(result.get(key, 0) or 0)
     print("[S3_STORE] " + " ".join(f"{key}={value}" for key, value in sorted(result.items())))
 
 
@@ -223,6 +227,8 @@ def _new_counters() -> Dict[str, int]:
         "s3_retry": 0,
         "s3_failed": 0,
         "s3_store_error": 0,
+        "s3_unreachable": 0,
+        "s3_local_deleted": 0,
     }
 
 

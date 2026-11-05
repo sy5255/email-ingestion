@@ -94,7 +94,15 @@ def settings() -> Dict[str, Any]:
         "save_root": Path(get("MAIL_ARCHIVE_SAVE_ROOT", "/config/work/sharedworkspace/mail_archive")),
         "time_budget_sec": int(get("STORE_TIME_BUDGET_SEC", str(50 * 60))),
         "claim_reserve_sec": int(get("STORE_CLAIM_RESERVE_SEC", "60")),
-        "max_attempt": int(get("STORE_MAX_ATTEMPT", str(ps.DEFAULT_MAX_ATTEMPT))),
+        # Per mail. S3 being down never counts against it (the pass stops instead), so this only
+        # runs out on a mail that keeps failing while S3 itself is fine.
+        "max_attempt": int(get("STORE_MAX_ATTEMPT", "50")),
+        # A transient failure that did run out is retried again after this many hours (the next
+        # night's window), with its count reset.
+        "revive_hours": int(get("STORE_REVIVE_HOURS", "20")),
+        # keep: leave the local mail folder. after_parse: delete it once it is in S3 and doc-parser
+        # has parsed it. after_store: as soon as it is in S3 (only once doc-parser reads from S3).
+        "local_retention": get("LOCAL_MAIL_RETENTION", "keep").lower() or "keep",
     }
 
 
@@ -238,13 +246,49 @@ def _etag(head: Dict[str, Any]) -> str:
     return str(head.get("ETag") or "").strip('"')
 
 
+class S3Unavailable(ps.TransientError):
+    """S3 itself is not answering (or refuses this account): not the mail's fault. The pass stops
+    and the mail is released without its attempt count going up."""
+
+
+_OUTAGE_CODES = {"SlowDown", "ServiceUnavailable", "RequestTimeout", "InternalError", "503", "500", "502", "504",
+                 "InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "NoSuchBucket", "403", "404"}
+
+
+def _is_outage(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    try:
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:                           # pragma: no cover - boto3 is required for S3
+        return False
+    if isinstance(exc, ClientError):
+        error = exc.response.get("Error") or {}
+        status = int((exc.response.get("ResponseMetadata") or {}).get("HTTPStatusCode") or 0)
+        return str(error.get("Code")) in _OUTAGE_CODES or status >= 500
+    return isinstance(exc, BotoCoreError)        # endpoint unreachable, timeouts, closed connections
+
+
+def _s3_error(action: str, exc: BaseException) -> ps.TransientError:
+    kind = S3Unavailable if _is_outage(exc) else ps.TransientError
+    return kind(f"{action}: {type(exc).__name__}: {exc}")
+
+
+def check_reachable(client, bucket: str) -> None:
+    """Before claiming anything: is the bucket there and does it take this account?"""
+    try:
+        client.head_bucket(Bucket=bucket)
+    except Exception as exc:
+        raise S3Unavailable(f"bucket {bucket}: {type(exc).__name__}: {exc}") from exc
+
+
 def put_verified(client, bucket: str, key: str, data: bytes) -> Dict[str, Any]:
     """Upload one object and prove the store holds these bytes."""
     try:
         client.put_object(Bucket=bucket, Key=key, Body=data)
         head = client.head_object(Bucket=bucket, Key=key)
-    except Exception as exc:                       # network, auth, throttling: try again later
-        raise ps.TransientError(f"upload {key}: {type(exc).__name__}: {exc}") from exc
+    except Exception as exc:
+        raise _s3_error(f"upload {key}", exc) from exc
     if int(head.get("ContentLength", -1)) != len(data):
         raise ps.TransientError(f"size mismatch after upload {key}: {head.get('ContentLength')} != {len(data)}")
     etag = _etag(head)
@@ -259,9 +303,17 @@ def put_verified(client, bucket: str, key: str, data: bytes) -> Dict[str, Any]:
 
 
 def stored_complete(client, bucket: str, key: str) -> Optional[Dict[str, Any]]:
+    """The _COMPLETE record, or None when there is none. S3 being down is an error, not 'none'."""
     try:
-        return json.loads(client.get_object(Bucket=bucket, Key=key)["Body"].read())
-    except Exception:
+        body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as exc:
+        code = str(((getattr(exc, "response", None) or {}).get("Error") or {}).get("Code") or "")
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            return None
+        raise _s3_error(f"read {key}", exc) from exc
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
         return None
 
 
@@ -271,6 +323,16 @@ def store_mail(client, cfg: Dict[str, Any], row: Dict[str, Any], *, heartbeat=la
     site, kind = site_and_kind(row, rel, cfg["default_site"])
     root = cfg["prefix_template"].format(site=site) + "/mail_archive/"
     prefix = root + rel
+    if not (cfg["save_root"] / rel).is_dir():
+        # Deleted locally after an earlier upload (LOCAL_MAIL_RETENTION): S3 holds the mail.
+        previous = stored_complete(client, cfg["bucket"], f"{prefix}/{COMPLETE_MARKER}")
+        if not previous:
+            raise ps.PermanentError(f"local mail folder is gone and S3 has no complete copy: {prefix}")
+        body = json.dumps(previous, ensure_ascii=False, indent=2).encode("utf-8")
+        files = previous.get("files") or []
+        return {"prefix": prefix, "complete_sha256": _sha256(body), "site": site, "report_kind": kind,
+                "files": len(files), "attachments": build_meta(row, site, kind, rel, files)["attachments"],
+                "reused": True}
     files = plan_files(row, cfg["save_root"], rel)
 
     local = [{"key": root + name, "sha256": _sha256(path.read_bytes()), "bytes": path.stat().st_size}
@@ -334,11 +396,100 @@ def _mail_row(db_cfg: ps.DBConfig, mail_id: int) -> Dict[str, Any]:
 _schema_ready: set = set()      # (host, port, database) already checked in this process
 
 
+def revive_failed(db_cfg: ps.DBConfig, cfg: Dict[str, Any]) -> int:
+    """Transient failures that ran out of attempts get another round once revive_hours have passed:
+    the next night's window tries them again. Permanent ones (a lost local folder, a wrong rule)
+    stay FAILED for a person to look at."""
+    conn = ps.connect(db_cfg)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            UPDATE `{ps.TASK_TABLE}`
+            SET status='RETRY', attempt=0, max_attempt=GREATEST(max_attempt, %s), next_retry_at=NULL
+            WHERE stage=%s AND status='FAILED' AND COALESCE(error_class, 'TRANSIENT') <> 'PERMANENT'
+              AND updated_at < NOW() - INTERVAL %s HOUR
+            """,
+            (cfg["max_attempt"], STAGE, cfg["revive_hours"]),
+        )
+        count = cur.rowcount
+        conn.commit()
+        return max(count, 0)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _cleanup_candidates(db_cfg: ps.DBConfig, mode: str) -> List[Dict[str, Any]]:
+    parsed = "" if mode == "after_store" else f"""
+              AND EXISTS (SELECT 1 FROM `{ps.TASK_TABLE}` p
+                          WHERE p.mail_id = t.mail_id AND p.stage = 'PARSE' AND p.status = 'COMPLETED')"""
+    conn = ps.connect(db_cfg)
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(f"""
+            SELECT t.mail_id, t.output_ref, t.output_hash, m.sharedworkspace_path, m.raw_hash
+            FROM `{ps.TASK_TABLE}` t JOIN `{ps.MAIL_TABLE}` m ON m.id = t.mail_id
+            WHERE t.stage = %s AND t.status = 'COMPLETED' AND t.output_ref IS NOT NULL{parsed}
+            ORDER BY t.completed_at
+        """, (STAGE,))
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def cleanup_local(client, cfg: Dict[str, Any], db_cfg: ps.DBConfig, run: ps.PipelineRun) -> int:
+    """LOCAL_MAIL_RETENTION: delete local mail folders that S3 holds, after checking S3 still holds
+    exactly these files. The version config.json stays (shared by every mail of the version)."""
+    import shutil
+
+    mode = cfg["local_retention"]
+    if mode not in {"after_parse", "after_store"}:
+        return 0
+    deleted = 0
+    for row in _cleanup_candidates(db_cfg, mode):
+        if run.deadline_reached(cfg["claim_reserve_sec"]):
+            break
+        try:
+            rel = mail_rel_path(row.get("sharedworkspace_path"), cfg["save_root"])
+        except ps.PermanentError:
+            continue
+        folder = cfg["save_root"] / rel
+        if not folder.is_dir():
+            continue                                      # already deleted
+        complete = stored_complete(client, cfg["bucket"], f"{row['output_ref']}/{COMPLETE_MARKER}")
+        body = json.dumps(complete, ensure_ascii=False, indent=2).encode("utf-8") if complete else b""
+        if not complete or _sha256(body) != row.get("output_hash"):
+            logger.warning("keep local mail_id=%s: S3 _COMPLETE missing or changed", row["mail_id"])
+            continue
+        stored = {(f.get("key"), f.get("sha256")) for f in complete.get("files") or []}
+        root = row["output_ref"][: -len(rel)]
+        kind = rel.split("/")[0]
+        local = [(root + f"{rel}/{p.relative_to(folder).as_posix()}", p) for p in folder.rglob("*") if p.is_file()]
+        raw_hash = str(row.get("raw_hash") or "")
+        raw = cfg["save_root"] / kind / "raw" / f"{raw_hash}.raw.eml"
+        if raw_hash and raw.is_file():
+            local.append((root + f"{kind}/raw/{raw_hash}.raw.eml", raw))
+        if any((key, _sha256(path.read_bytes())) not in stored for key, path in local):
+            logger.warning("keep local mail_id=%s: a local file is not in S3 as it is", row["mail_id"])
+            continue
+        shutil.rmtree(folder)
+        if raw_hash and raw.is_file():
+            raw.unlink()
+        deleted += 1
+    return deleted
+
+
 def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
              time_budget_sec: Optional[float] = None) -> Dict[str, int]:
     """One STORE pass. ingest_pop3.py calls it right after its own archive step with a short
     budget (STORE_BUDGET_PER_RUN_SEC), so new mail keeps being collected; the rest is picked up
-    by its next pass."""
+    by its next pass.
+
+    S3 down: checked before anything is claimed, and an outage in the middle releases the mail
+    without counting an attempt and ends the pass. Nothing is lost; the next pass, or the next
+    night, tries again."""
     cfg = settings()
     if time_budget_sec is not None:
         cfg["time_budget_sec"] = time_budget_sec
@@ -356,6 +507,11 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
         ps.ensure_schema(db_cfg)        # once per DB per process: ingest_pop3.py calls this every pass
         _schema_ready.add(db_key)
     client = client or make_client(cfg)
+    try:
+        check_reachable(client, cfg["bucket"])
+    except S3Unavailable as exc:
+        logger.warning("S3 not reachable, nothing claimed; the next pass tries again: %s", exc)
+        return {"s3_unreachable": 1}
 
     with ps.PipelineRun(db_cfg, COMPONENT, time_budget_sec=cfg["time_budget_sec"]) as run:
         if not run.acquired:
@@ -363,6 +519,7 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
             return {}
         queue = ps.TaskQueue(db_cfg, run, max_attempt=cfg["max_attempt"])
         run.incr("recovered", queue.recover_orphans([STAGE]))
+        run.incr("revived", revive_failed(db_cfg, cfg))
         run.incr("seeded", queue.seed(STAGE, seed_sql()))
         logger.info("STORE started run_id=%s bucket=%s counters=%s", run.run_id, cfg["bucket"], run.counters)
         while True:
@@ -382,10 +539,21 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
                 run.incr("reused" if result["reused"] else "stored")
                 logger.info("stored mail_id=%s -> s3://%s/%s (%s files%s)", task.mail_id, cfg["bucket"],
                             result["prefix"], result["files"], ", already complete" if result["reused"] else "")
+            except S3Unavailable as exc:
+                queue.release(task, f"S3 unavailable: {exc}")
+                run.incr("s3_unreachable")
+                run.exit_reason = "S3_UNAVAILABLE"
+                logger.warning("S3 went away during mail_id=%s; released, pass ends: %s", task.mail_id, exc)
+                break
             except Exception as exc:
                 status = queue.fail(task, exc)
                 run.incr("failed" if status == "FAILED" else "retry")
                 logger.warning("store failed mail_id=%s -> %s: %s", task.mail_id, status, exc)
+        if run.exit_reason != "S3_UNAVAILABLE":
+            try:
+                run.incr("local_deleted", cleanup_local(client, cfg, db_cfg, run))
+            except S3Unavailable as exc:
+                logger.warning("local clean-up stopped, S3 unavailable: %s", exc)
         logger.info("STORE finished run_id=%s reason=%s counters=%s", run.run_id, run.exit_reason, run.counters)
         return dict(run.counters)
 

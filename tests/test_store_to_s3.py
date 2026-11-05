@@ -160,7 +160,7 @@ def test_a_rule_without_a_site_is_ifa(db_config, s3):
     assert _task(db_config, mail_id)["output_ref"].startswith("IFA/")
 
 
-def test_a_missing_local_folder_fails_for_good_and_an_s3_error_retries(db_config, s3, monkeypatch):
+def test_a_missing_local_folder_fails_for_good_and_an_s3_outage_costs_no_attempt(db_config, s3, monkeypatch):
     import shutil
 
     client, save_root = s3
@@ -184,7 +184,8 @@ def test_a_missing_local_folder_fails_for_good_and_an_s3_error_retries(db_config
     st.run_once(_ps_cfg(db_config), client=client)
     assert (_task(db_config, gone)["status"], _task(db_config, gone)["error_class"]) == ("FAILED", "PERMANENT")
     retry = _task(db_config, flaky)
-    assert (retry["status"], retry["attempt"], retry["error_class"]) == ("RETRY", 1, "TRANSIENT")
+    # A connection error is S3 being down, not the mail: released with no attempt counted.
+    assert (retry["status"], retry["attempt"]) == ("RETRY", 0)
     assert not [k for k in _keys(client) if "오류" in k], "nothing of the failed mail is left half-complete"
 
 
@@ -299,3 +300,120 @@ def test_s3_settings_can_sit_in_the_env_file_without_touching_the_rest(tmp_path,
     assert "POP3_HOST" not in os.environ
     monkeypatch.setenv("S3_BUCKET", "from-env")
     assert st.settings()["bucket"] == "from-env", "the environment wins"
+
+
+# ── S3 down at night: nothing is lost, nothing is used up, the next night tries again
+
+
+def _set(db_config, sql, params=()):
+    ps.ensure_schema(_ps_cfg(db_config))         # the task table, before any STORE pass made it
+    conn = ps.connect(_ps_cfg(db_config))
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def test_s3_down_before_the_pass_claims_nothing_and_the_next_pass_uploads(db_config, s3, monkeypatch):
+    client, save_root = s3
+    mail_id = _archive(db_config, save_root, "d1", "[Inline FA Report] 장애 전")
+    real_head = client.head_bucket
+    monkeypatch.setattr(client, "head_bucket", lambda **kw: (_ for _ in ()).throw(ConnectionError("down")))
+    assert st.run_once(_ps_cfg(db_config), client=client) == {"s3_unreachable": 1}
+    assert _task(db_config, mail_id) is None, "not even seeded: nothing was touched"
+    monkeypatch.setattr(client, "head_bucket", real_head)
+    assert st.run_once(_ps_cfg(db_config), client=client)["stored"] == 1
+
+
+def test_an_outage_in_the_middle_releases_the_mail_and_ends_the_pass(db_config, s3, monkeypatch):
+    client, save_root = s3
+    first = _archive(db_config, save_root, "d2", "[Inline FA Report] 첫째")
+    second = _archive(db_config, save_root, "d3", "[Inline FA Report] 둘째")
+    real_put = client.put_object
+    monkeypatch.setattr(client, "put_object", lambda **kw: (_ for _ in ()).throw(ConnectionError("gone")))
+    counters = st.run_once(_ps_cfg(db_config), client=client)
+    assert counters["s3_unreachable"] == 1 and counters.get("retry", 0) == 0
+    states = sorted((_task(db_config, m)["status"], _task(db_config, m)["attempt"]) for m in (first, second))
+    assert states == [("PENDING", 0), ("RETRY", 0)], "one released, the other never claimed"
+    monkeypatch.setattr(client, "put_object", real_put)
+    assert st.run_once(_ps_cfg(db_config), client=client)["stored"] == 2
+
+
+def test_a_transient_failure_that_ran_out_is_revived_the_next_day(db_config, s3):
+    client, save_root = s3
+    worn = _archive(db_config, save_root, "d4", "[Inline FA Report] 지친 작업")
+    lost = _archive(db_config, save_root, "d5", "[Inline FA Report] 영구 실패")
+    for mail_id, error_class in ((worn, "TRANSIENT"), (lost, "PERMANENT")):
+        _set(db_config, f"INSERT INTO `{ps.TASK_TABLE}`(mail_id, stage, item_key, status, attempt, max_attempt, "
+                        "error_class, input_ref, input_hash, updated_at) SELECT id, 'STORE', '', 'FAILED', 5, 5, %s, "
+                        f"sharedworkspace_path, raw_hash, NOW() - INTERVAL 21 HOUR FROM `{ps.MAIL_TABLE}` WHERE id=%s",
+             (error_class, mail_id))
+    counters = st.run_once(_ps_cfg(db_config), client=client)
+    assert counters["revived"] == 1 and counters["stored"] == 1
+    assert _task(db_config, worn)["status"] == "COMPLETED"
+    assert _task(db_config, lost)["status"] == "FAILED"
+
+
+# ── S3 first: the local copy goes once S3 holds it and doc-parser has parsed it
+
+
+def _parsed(db_config, mail_id):
+    _set(db_config, f"INSERT INTO `{ps.TASK_TABLE}`(mail_id, stage, item_key, status) VALUES(%s,'PARSE','','COMPLETED')",
+         (mail_id,))
+
+
+def _folder(db_config, mail_id) -> Path:
+    conn = ps.connect(_ps_cfg(db_config))
+    cur = conn.cursor()
+    cur.execute(f"SELECT sharedworkspace_path FROM `{ps.MAIL_TABLE}` WHERE id=%s", (mail_id,))
+    path = Path(cur.fetchone()[0])
+    cur.close()
+    conn.close()
+    return path
+
+
+def test_after_parse_deletes_the_local_folder_only_once_s3_has_it_and_it_is_parsed(db_config, s3, monkeypatch):
+    client, save_root = s3
+    monkeypatch.setenv("LOCAL_MAIL_RETENTION", "after_parse")
+    mail_id = _archive(db_config, save_root, "r1", "[Inline FA Report] 보관 정리")
+    folder = _folder(db_config, mail_id)
+    raws = list((save_root / "inline_fa_report" / "raw").glob("*.raw.eml"))
+    counters = st.run_once(_ps_cfg(db_config), client=client)
+    assert counters["stored"] == 1 and counters["local_deleted"] == 0 and folder.is_dir(), "not parsed yet"
+    _parsed(db_config, mail_id)
+    assert st.run_once(_ps_cfg(db_config), client=client)["local_deleted"] == 1
+    assert not folder.exists() and not any(r.exists() for r in raws)
+    assert (save_root / "inline_fa_report" / "ver3" / "config.json").is_file(), "the version config stays"
+
+    _set(db_config, f"UPDATE `{ps.TASK_TABLE}` SET status='PENDING' WHERE mail_id=%s AND stage='STORE'", (mail_id,))
+    assert st.run_once(_ps_cfg(db_config), client=client)["reused"] == 1, "S3 still holds it: nothing to upload"
+    assert _task(db_config, mail_id)["status"] == "COMPLETED"
+
+
+def test_a_local_file_that_changed_after_the_upload_keeps_the_folder(db_config, s3, monkeypatch):
+    client, save_root = s3
+    monkeypatch.setenv("LOCAL_MAIL_RETENTION", "after_parse")
+    mail_id = _archive(db_config, save_root, "r2", "[Inline FA Report] 바뀐 파일")
+    st.run_once(_ps_cfg(db_config), client=client)
+    folder = _folder(db_config, mail_id)
+    next(folder.glob("*.txt")).write_text("changed", encoding="utf-8")
+    _parsed(db_config, mail_id)
+    assert st.run_once(_ps_cfg(db_config), client=client)["local_deleted"] == 0 and folder.is_dir()
+
+
+def test_keep_is_the_default(db_config, s3):
+    client, save_root = s3
+    mail_id = _archive(db_config, save_root, "r3", "[Inline FA Report] 기본값")
+    _parsed(db_config, mail_id)
+    st.run_once(_ps_cfg(db_config), client=client)
+    assert st.run_once(_ps_cfg(db_config), client=client)["local_deleted"] == 0 and _folder(db_config, mail_id).is_dir()
+
+
+def test_the_4am_run_says_when_s3_is_down(db_config, ingest, monkeypatch, capsys):
+    ingest_pop3, at, client = ingest
+    monkeypatch.setattr(client, "head_bucket", lambda **kw: (_ for _ in ()).throw(ConnectionError("down")))
+    at(4, 10)
+    ingest_pop3.run_once()
+    out = capsys.readouterr().out
+    assert "[FILE_COMPLETED]" in out and "[S3_STORE_UNREACHABLE]" in out and "s3_unreachable=1" in out

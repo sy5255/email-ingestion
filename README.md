@@ -124,7 +124,37 @@ S3 설정을 읽는 데만 쓰고, 다른 설정(POP3·DB 등)에는 영향을 �
   올리고, 파일마다 크기와 MD5(ETag)로 대조한 뒤, 마지막에 `_COMPLETE`(파일 목록·sha256)를 올립니다.
 - 진행 상태는 `ae_llm_agent_pipeline_task`의 `stage='STORE'`에 남습니다. 메일 표에는 칼럼을 더하지 않습니다.
   `output_ref`=S3 폴더 키, `output_hash`=`_COMPLETE` sha256, `checkpoint_json`=부서·레포트 종류·첨부 목록.
-- 로컬 폴더가 없으면 영구 실패(FAILED), S3 접속 오류는 재시도(RETRY, 지수 backoff)입니다.
+- S3에 이미 `_COMPLETE`가 있고 내용이 같으면 다시 올리지 않습니다. 로컬 폴더가 지워진 메일도
+  S3의 `_COMPLETE`가 있으면 완료로 둡니다. 둘 다 없으면 영구 실패(FAILED)입니다.
+
+### S3가 밤에 죽어 있을 때
+
+- 업로드 전에 S3 버킷에 먼저 접속해 봅니다. 안 되면 메일을 하나도 건드리지 않고 넘어가고, 로그에
+  `[S3_STORE_UNREACHABLE]`이 남습니다. 수집·로컬 저장은 그대로 끝납니다.
+- 올리던 도중에 S3가 끊기면 그 메일은 시도 횟수를 쓰지 않고 대기(RETRY)로 돌려 두고, 그 회차의 업로드를 멈춥니다.
+- 그 밖의 일시 오류는 재시도(지수 backoff, 최대 6시간 간격)를 `STORE_MAX_ATTEMPT`(기본 50)번까지 합니다.
+- 그래도 실패(FAILED)로 끝난 메일 중 영구 실패가 아닌 것은 `STORE_REVIVE_HOURS`(기본 20시간)가 지나면
+  다음 업로드 때 시도 횟수를 0으로 되돌려 다시 올립니다. 그래서 새벽 4시에 S3가 죽어 있었더라도
+  다음 날 새벽 4시 회차에서 자동으로 다시 올라갑니다. 손으로 할 일은 없습니다.
+
+### 로컬 용량 줄이기 (S3 위주 보관)
+
+`LOCAL_MAIL_RETENTION`으로 S3에 올린 메일의 로컬 사본을 지울 수 있습니다. 기본은 `keep`(지우지 않음)입니다.
+
+| 값 | 지우는 시점 |
+|---|---|
+| `keep` | 지우지 않음 (기본) |
+| `after_parse` | S3 업로드 완료 **그리고** doc-parser 파싱(PARSE) 완료 후 (권장) |
+| `after_store` | S3 업로드 완료 직후 |
+
+- 지우기 전에 S3의 `_COMPLETE`를 다시 읽고, 로컬 파일과 원본 eml이 전부 S3에 같은 sha256으로 있는지
+  하나하나 대조합니다. 하나라도 다르거나 없으면 그 메일은 지우지 않습니다.
+- 지우는 것: 메일 폴더(`{report_kind}/{ver}/{메일 폴더}`)와 `raw/{raw_hash}.raw.eml`. 버전 `config.json`과
+  manifest는 남깁니다.
+- 주의: doc-parser는 아직 로컬 `.enriched.eml`을 읽습니다(S3 읽기는 E3에서). 지운 뒤 같은 메일을 **다시 파싱**해야
+  하면 S3에서 받아 와야 하므로, E3 전까지는 `after_store` 대신 `after_parse`를 쓰세요.
+- Curator(report-search)는 로컬 첨부 폴더가 없는 메일의 이미지 목록을 STORE 기록에서 읽고, 이미지 파일은
+  `WORKSPACE_BACKEND=s3`일 때 S3에서 읽습니다.
 - `S3_STORE_ENABLED`가 꺼져 있거나 S3 설정이 빠지면 아무것도 하지 않고 끝납니다.
 
 현황:
@@ -134,3 +164,6 @@ SELECT status, COUNT(*) FROM ae_llm_agent_pipeline_task WHERE stage='STORE' GROU
 SELECT mail_id, attempt, last_error FROM ae_llm_agent_pipeline_task
 WHERE stage='STORE' AND status IN ('RETRY','FAILED') ORDER BY updated_at DESC LIMIT 20;
 ```
+
+로그(`ingest_pop3.py` 04시대 회차): `[S3_STORE] stored=… reused=… retry=… failed=… revived=… local_deleted=…`,
+S3가 죽어 있었으면 `[S3_STORE_UNREACHABLE]`.
