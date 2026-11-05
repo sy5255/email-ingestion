@@ -3,9 +3,12 @@
 """
 STORE 단계: 저장이 끝난 FILE_ARCHIVE 메일 폴더를 S3에 올리고 대조합니다.
 
-    python store_to_s3.py            # 1시간 주기 잡 1회 (다른 잡과 같은 구조: GET_LOCK + 시간 예산)
+ingest_pop3.py가 파일을 저장하는 회차(새벽 자동 저장 시간대, --archive-only, REALTIME)마다 저장 직후
+이 단계를 짧게(STORE_BUDGET_PER_RUN_SEC, 기본 5분) 함께 실행합니다. 따로 실행할 수도 있습니다.
 
-메일 저장(ingest_pop3.py)은 지금처럼 로컬 sharedworkspace에 하고, 이 잡이 그 결과를
+    python store_to_s3.py            # 단독 1회 (수동 실행·이관용, GET_LOCK + 시간 예산 50분)
+
+메일 저장은 지금처럼 로컬 sharedworkspace에 하고, 이 단계가 그 결과를
 S3 규칙(report-search docs/s3_storage_layout.md)대로 올립니다. 진행 상태는 다른 단계와 같은
 `ae_llm_agent_pipeline_task`(stage='STORE')에 남으므로, 끊긴 곳부터 다시 하고 실패·재시도
 기록을 DB에서 볼 수 있습니다. 메일 표에는 칼럼을 더하지 않습니다.
@@ -37,8 +40,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pipeline_state as ps
 
-ps.load_env_file(Path(__file__).resolve().parent / ".env")
-
 logger = logging.getLogger("store_to_s3")
 
 STAGE = "STORE"
@@ -47,28 +48,53 @@ COMPLETE_MARKER = "_COMPLETE"
 META_NAME = "meta.json"
 
 
-def _flag(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+
+
+def _env_file_values() -> Dict[str, str]:
+    """This repository's .env, read without putting it into the process environment: called from
+    ingest_pop3.py, the S3 settings may live there while every other setting keeps coming from
+    wherever it came from before."""
+    values: Dict[str, str] = {}
+    if not ENV_FILE.is_file():
+        return values
+    for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key] = value
+    return values
 
 
 def settings() -> Dict[str, Any]:
-    """Read when the job starts, so a test or a scheduler sets them just before."""
+    """Read when the job starts. The environment wins over the .env file."""
+    file_values = _env_file_values()
+
+    def get(name: str, default: str = "") -> str:
+        value = os.environ.get(name)
+        return (value if value is not None else file_values.get(name, default)).strip()
+
     return {
-        "enabled": _flag("S3_STORE_ENABLED"),
-        "endpoint_url": os.getenv("S3_ENDPOINT_URL", "").strip(),
-        "region": os.getenv("S3_REGION", "").strip() or None,
-        "access_key": (os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID") or "").strip(),
-        "secret_key": (os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip(),
-        "bucket": os.getenv("S3_BUCKET", "Analysis_Report").strip(),
-        "addressing_style": os.getenv("S3_ADDRESSING_STYLE", "path").strip() or "path",
-        "signature_version": os.getenv("S3_SIGNATURE_VERSION", "s3v4").strip() or "s3v4",
+        "enabled": get("S3_STORE_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+        "endpoint_url": get("S3_ENDPOINT_URL"),
+        "region": get("S3_REGION") or None,
+        "access_key": get("S3_ACCESS_KEY_ID") or get("AWS_ACCESS_KEY_ID"),
+        "secret_key": get("S3_SECRET_ACCESS_KEY") or get("AWS_SECRET_ACCESS_KEY"),
+        "bucket": get("S3_BUCKET", "Analysis_Report"),
+        "addressing_style": get("S3_ADDRESSING_STYLE", "path") or "path",
+        "signature_version": get("S3_SIGNATURE_VERSION", "s3v4") or "s3v4",
         # {site} is the department: IFA/sharedworkspace, S3FA/sharedworkspace, …
-        "prefix_template": os.getenv("S3_SITE_PREFIX_TEMPLATE", "{site}/sharedworkspace").strip().strip("/"),
-        "default_site": os.getenv("STORE_DEFAULT_SITE", "IFA").strip().upper() or "IFA",
-        "save_root": Path(os.getenv("MAIL_ARCHIVE_SAVE_ROOT", "/config/work/sharedworkspace/mail_archive")),
-        "time_budget_sec": int(os.getenv("STORE_TIME_BUDGET_SEC", str(50 * 60))),
-        "claim_reserve_sec": int(os.getenv("STORE_CLAIM_RESERVE_SEC", "60")),
-        "max_attempt": int(os.getenv("STORE_MAX_ATTEMPT", str(ps.DEFAULT_MAX_ATTEMPT))),
+        "prefix_template": get("S3_SITE_PREFIX_TEMPLATE", "{site}/sharedworkspace").strip("/"),
+        "default_site": get("STORE_DEFAULT_SITE", "IFA").upper() or "IFA",
+        "save_root": Path(get("MAIL_ARCHIVE_SAVE_ROOT", "/config/work/sharedworkspace/mail_archive")),
+        "time_budget_sec": int(get("STORE_TIME_BUDGET_SEC", str(50 * 60))),
+        "claim_reserve_sec": int(get("STORE_CLAIM_RESERVE_SEC", "60")),
+        "max_attempt": int(get("STORE_MAX_ATTEMPT", str(ps.DEFAULT_MAX_ATTEMPT))),
     }
 
 
@@ -305,8 +331,18 @@ def _mail_row(db_cfg: ps.DBConfig, mail_id: int) -> Dict[str, Any]:
     return row
 
 
-def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None) -> Dict[str, int]:
+_schema_ready: set = set()      # (host, port, database) already checked in this process
+
+
+def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
+             time_budget_sec: Optional[float] = None) -> Dict[str, int]:
+    """One STORE pass. ingest_pop3.py calls it right after its own archive step with a short
+    budget (STORE_BUDGET_PER_RUN_SEC), so new mail keeps being collected; the rest is picked up
+    by its next pass."""
     cfg = settings()
+    if time_budget_sec is not None:
+        cfg["time_budget_sec"] = time_budget_sec
+        cfg["claim_reserve_sec"] = min(cfg["claim_reserve_sec"], max(0, int(time_budget_sec) // 10))
     if not cfg["enabled"]:
         logger.info("S3_STORE_ENABLED is off; nothing to do")
         return {"disabled": 1}
@@ -315,7 +351,10 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None) -> Dict[str, 
         logger.error("S3 settings missing: %s; nothing stored", ", ".join(missing))
         return {"misconfigured": 1}
     db_cfg = db_cfg or ps.DBConfig.from_env()
-    ps.ensure_schema(db_cfg)
+    db_key = (db_cfg.host, db_cfg.port, db_cfg.database)
+    if db_key not in _schema_ready:
+        ps.ensure_schema(db_cfg)        # once per DB per process: ingest_pop3.py calls this every pass
+        _schema_ready.add(db_key)
     client = client or make_client(cfg)
 
     with ps.PipelineRun(db_cfg, COMPONENT, time_budget_sec=cfg["time_budget_sec"]) as run:
@@ -352,6 +391,8 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None) -> Dict[str, 
 
 
 if __name__ == "__main__":
+    # Run on its own (a manual pass or a backfill), the DB settings may be in .env as well.
+    ps.load_env_file(ENV_FILE)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     counters = run_once()
     sys.exit(1 if counters.get("misconfigured") else 0)

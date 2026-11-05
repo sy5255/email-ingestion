@@ -91,13 +91,17 @@ cd /config/work/request-pipeline && python run_pipeline.py
 
 ## S3 저장 (STORE 단계)
 
-저장이 끝난 FILE_ARCHIVE 메일 폴더를 S3 드라이브에 올립니다. 메일 저장 자체는 지금처럼
-로컬 sharedworkspace에 하고, 이 잡이 그 결과를 올리고 대조합니다. 저장 규칙은 report-search의
-`docs/s3_storage_layout.md`입니다.
+저장이 끝난 FILE_ARCHIVE 메일 폴더를 S3 드라이브에 올립니다. **잡을 새로 등록할 필요는 없습니다.**
+`ingest_pop3.py`가 파일을 저장하는 회차(NIGHT 모드의 04:00~05:00 자동 저장, `--archive-only`, REALTIME)마다
+로컬 저장 직후 S3 업로드를 함께 합니다. 한 회차에서 업로드는 `STORE_BUDGET_PER_RUN_SEC`(기본 300초)까지만
+하고 남은 것은 다음 회차(60초 뒤)에 이어서 하므로, 밀린 업로드가 많아도 새 메일 수집이 오래 멈추지 않습니다.
+S3 오류가 나도 수집·로컬 저장은 그대로 끝나고, 로그에 `[S3_STORE_ERROR]`가 남습니다. 저장 규칙은
+report-search의 `docs/s3_storage_layout.md`입니다.
 
 ```bash
-pip install boto3==1.38.41 # 처음 한 번 (report-search와 같은 버전)
-python store_to_s3.py      # 1시간 주기, 1회 실행 후 종료 (다른 잡과 같은 GET_LOCK + 시간 예산 50분)
+pip install boto3==1.38.41   # 처음 한 번 (report-search와 같은 버전)
+python ingest_pop3.py        # 지금 스케줄러에 걸린 그대로. 04시대 회차에서 저장 + S3 업로드
+python store_to_s3.py        # (선택) 업로드만 단독으로 1회: 수동 확인·밀린 이관용, 최대 50분
 ```
 
 ```env
@@ -108,6 +112,9 @@ S3_ACCESS_KEY_ID=…
 S3_SECRET_ACCESS_KEY=…
 S3_BUCKET=Analysis_Report
 ```
+
+S3 설정은 환경변수나 이 저장소의 `.env`에 둘 수 있습니다. `ingest_pop3.py`에서 부를 때 `.env`의 값은
+S3 설정을 읽는 데만 쓰고, 다른 설정(POP3·DB 등)에는 영향을 주지 않습니다. 환경변수가 있으면 환경변수가 우선입니다.
 
 - 대상: `route_type='FILE_ARCHIVE' AND status='COMPLETED'`인 메일 전부. 앞으로 들어오는 메일과 함께
   지금까지 저장된 메일도 차례로 올립니다(이관). 분류되지 않은 메일은 올리지 않습니다.

@@ -19,6 +19,8 @@ from file_archive_queue import (
     mark_file_source_missing,
     should_mark_source_missing,
 )
+import pipeline_state as ps
+import store_to_s3
 from mail_routing import (
     DBConfig,
     ensure_schema,
@@ -175,6 +177,34 @@ def _retrieve_raw_mail(server: Any, message_no: int) -> bytes:
     return b"\r\n".join(raw_lines) + b"\r\n"
 
 
+# S3 upload right after each archive pass (store_to_s3.py). Short, so a pass that has a large
+# backlog to upload still gets back to collecting new mail within minutes.
+STORE_BUDGET_PER_RUN_SEC = int(os.getenv("STORE_BUDGET_PER_RUN_SEC", "300"))
+
+
+def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None:
+    """Upload what the archive step saved. Never fails the ingestion run."""
+    try:
+        result = store_to_s3.run_once(
+            ps.DBConfig(host=db_config.host, port=db_config.port, database=db_config.database,
+                        user=db_config.user, password=db_config.password),
+            time_budget_sec=STORE_BUDGET_PER_RUN_SEC,
+        )
+    except Exception as exc:
+        counters["s3_store_error"] += 1
+        print(f"[S3_STORE_ERROR] {type(exc).__name__}: {exc}")
+        return
+    if result.get("disabled"):
+        return
+    if result.get("misconfigured"):
+        counters["s3_store_error"] += 1
+        print("[S3_STORE_ERROR] S3_STORE_ENABLED=true but S3 settings are missing")
+        return
+    for key in ("stored", "reused", "retry", "failed"):
+        counters[f"s3_{key}"] += int(result.get(key, 0) or 0)
+    print("[S3_STORE] " + " ".join(f"{key}={value}" for key, value in sorted(result.items())))
+
+
 def _new_counters() -> Dict[str, int]:
     return {
         "new": 0,
@@ -188,6 +218,11 @@ def _new_counters() -> Dict[str, int]:
         "file_source_missing_deferred": 0,
         "claim_skipped": 0,
         "failed": 0,
+        "s3_stored": 0,
+        "s3_reused": 0,
+        "s3_retry": 0,
+        "s3_failed": 0,
+        "s3_store_error": 0,
     }
 
 
@@ -417,6 +452,10 @@ def run_once(*, archive_only: bool = False) -> None:
                 server.quit()
             except Exception:
                 server.close()
+
+        if should_archive:
+            # After the POP3 session is closed: the upload reads the saved folders, not the mailbox.
+            _store_archived_to_s3(db_config, counters)
 
         print(
             f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "

@@ -214,3 +214,88 @@ def test_a_store_whose_etag_is_not_md5_is_checked_by_its_bytes():
     assert st.put_verified(Store(), "b", "k", b"hello")["sha256"] == ps.sha256_bytes(b"hello")
     with pytest.raises(ps.TransientError, match="sha256 mismatch"):
         st.put_verified(Store(corrupt=True), "b", "k", b"hello")
+
+
+# ── ingest_pop3.py uploads right after its own archive step (the 04:00 window)
+
+
+@pytest.fixture
+def ingest(db_config, s3, monkeypatch):
+    from datetime import datetime
+
+    import ingest_pop3
+    from test_night_archive import FakePOP3, _raw
+
+    client, save_root = s3
+    monkeypatch.setattr(ingest_pop3, "DBConfig", lambda: db_config)
+    monkeypatch.setattr(ingest_pop3, "SAVE_ROOT", save_root)
+    monkeypatch.setattr(ingest_pop3, "POP3_PASS", "x")
+    monkeypatch.setattr(ingest_pop3, "MAILBOX_KEY", "box")
+    monkeypatch.setattr(ingest_pop3, "FILE_ARCHIVE_MODE", "NIGHT")
+    monkeypatch.setattr(ingest_pop3.poplib, "POP3_SSL", FakePOP3)
+    monkeypatch.setattr(st, "make_client", lambda cfg: client)
+    FakePOP3.mailbox = {"u-file": _raw("[Inline FA Report] night test")}
+
+    def at(hour, minute=0):
+        monkeypatch.setattr(ingest_pop3, "_now", lambda: datetime(2026, 11, 5, hour, minute))
+
+    return ingest_pop3, at, client
+
+
+def _store_tasks(db_config):
+    conn = ps.connect(_ps_cfg(db_config))
+    cur = conn.cursor(dictionary=True)
+    cur.execute(f"SHOW TABLES LIKE '{ps.TASK_TABLE}'")
+    if not cur.fetchall():
+        return []
+    cur.execute(f"SELECT status FROM `{ps.TASK_TABLE}` WHERE stage='STORE'")
+    rows = [r["status"] for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+def test_the_4am_archive_run_also_uploads_and_a_daytime_run_does_not(db_config, ingest, capsys):
+    ingest_pop3, at, client = ingest
+    at(14)
+    ingest_pop3.run_once()
+    assert _store_tasks(db_config) == [] and not _keys(client)
+    at(4, 10)
+    ingest_pop3.run_once()
+    assert _store_tasks(db_config) == ["COMPLETED"]
+    assert any(k.endswith("/_COMPLETE") for k in _keys(client, "IFA/sharedworkspace/mail_archive/inline_fa_report/"))
+    out = capsys.readouterr().out
+    assert "[S3_STORE]" in out and "s3_stored=1" in out
+
+
+def test_archive_only_uploads_too_and_s3_trouble_never_stops_ingestion(db_config, ingest, monkeypatch, capsys):
+    ingest_pop3, at, client = ingest
+    at(14)
+    ingest_pop3.run_once()
+    monkeypatch.setattr(st, "run_once", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("S3 down")))
+    ingest_pop3.run_once(archive_only=True)
+    out = capsys.readouterr().out
+    assert "[FILE_COMPLETED]" in out and "[S3_STORE_ERROR] ConnectionError: S3 down" in out
+    assert "s3_store_error=1" in out
+
+
+def test_with_the_upload_off_the_4am_run_only_archives(db_config, ingest, monkeypatch):
+    ingest_pop3, at, client = ingest
+    monkeypatch.setenv("S3_STORE_ENABLED", "false")
+    at(4, 10)
+    ingest_pop3.run_once()
+    assert _store_tasks(db_config) == [] and not _keys(client)
+
+
+def test_s3_settings_can_sit_in_the_env_file_without_touching_the_rest(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("S3_STORE_ENABLED=true\nS3_BUCKET='from-file'\nPOP3_HOST=should-not-leak\n", encoding="utf-8")
+    monkeypatch.setattr(st, "ENV_FILE", env_file)
+    monkeypatch.delenv("S3_STORE_ENABLED", raising=False)
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("POP3_HOST", raising=False)
+    cfg = st.settings()
+    assert cfg["enabled"] and cfg["bucket"] == "from-file"
+    assert "POP3_HOST" not in os.environ
+    monkeypatch.setenv("S3_BUCKET", "from-env")
+    assert st.settings()["bucket"] == "from-env", "the environment wins"

@@ -166,7 +166,8 @@ WHERE id=…;
 - [x] P8-2 `pipeline_state.py` 사본을 email-ingestion에도 둠(3개 저장소 동일 사본)
 - [x] P8-3 규칙 action에 `site`·`report_kind`(seed 규칙: IFA / inline_fa_report). 예전 규칙은 site 기본값 IFA
 - [x] P8-4 테스트(moto S3 + MariaDB) 7건, 실제 HTTP S3(moto 서버, 버킷 `Analysis_Report` path 방식)로 `python store_to_s3.py` 확인
-- [~] P8-5 개발 서버에서 `S3_STORE_ENABLED=true`로 1회 실행·확인 후 스케줄러에 1시간 주기 등록 — **사용자**
+- [x] P8-5 `ingest_pop3.py`가 파일을 저장하는 회차(04~05시 자동 저장, `--archive-only`, REALTIME)마다 저장 직후 업로드(회차당 `STORE_BUDGET_PER_RUN_SEC`, 기본 300초). 잡 추가 등록 불필요, S3 오류는 수집을 멈추지 않음. 테스트 4건 추가(총 43건)
+- [~] P8-5b 개발 서버에서 `S3_STORE_ENABLED=true` + S3 설정 후 `RUN_ONCE=true python ingest_pop3.py --archive-only`로 확인 — **사용자**
 - [ ] P8-6 doc-parser가 S3에서 읽고 S3에 씀(E3), 문서 목록 표 직접 기록
 - [ ] P8-7 rag-preparer가 S3에서 읽고 S3에 씀(E4), 같은 제목은 최신 메일만 검색되게
 - [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
@@ -174,6 +175,7 @@ WHERE id=…;
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-05 | P8-5 | email-ingestion | 04시 저장 회차에 S3 업로드 연결(`ingest_pop3.py`), 테스트 43건 통과 |
 | 2026-11-05 | P8-1~P8-4 | email-ingestion | S3 저장 STORE 단계(`store_to_s3.py`), pipeline_state 사본, 규칙 action site·report_kind, 테스트 39건 통과 |
 | 2026-10-04 | P0-1 | 전체 | 작업계획서 배포 |
 | 2026-10-04 | P1-1~P1-6 | rag-preparer | 업로드 실패 추적·원자적 출력·hash 버그 수정, 테스트 `tests/` 추가 |
