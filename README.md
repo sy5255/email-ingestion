@@ -108,7 +108,7 @@ python store_to_s3.py        # (선택) 업로드만 단독으로 1회: 수동 �
 S3_STORE_ENABLED=true
 S3_ENDPOINT_URL=https://s3.dataplatform.samsungds.net:9021
 S3_CA_BUNDLE=/config/work/email-ingestion/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
-S3_REGION=KOR-HS
+S3_REGION=KOR_HS
 S3_ACCESS_KEY_ID=…
 S3_SECRET_ACCESS_KEY=…
 S3_BUCKET=Analysis_Report
