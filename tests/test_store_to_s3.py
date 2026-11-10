@@ -451,3 +451,27 @@ def test_a_wrong_certificate_path_is_a_setting_error_not_an_outage(tmp_path, mon
                                       counters)
     out = capsys.readouterr().out
     assert "S3_CA_BUNDLE (no file at" in out and counters["s3_store_error"] == 1
+
+
+def _tls_context(client):
+    return client._endpoint.http_session._manager.connection_pool_kw["ssl_context"]
+
+
+def test_the_cipher_setting_changes_only_the_s3_client(monkeypatch):
+    """The company S3 offers a DH key OpenSSL 3 rejects (DH_KEY_TOO_SMALL)."""
+    for name, value in (("S3_ENDPOINT_URL", "https://s3.example:9021"), ("S3_ACCESS_KEY_ID", "k"),
+                        ("S3_SECRET_ACCESS_KEY", "s"), ("S3_REGION", "KOR-HS"), ("S3_CA_BUNDLE", "")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("S3_TLS_CIPHERS", "DEFAULT:!kDHE")
+    no_dh = st.make_client(st.settings())
+    assert not [c["name"] for c in _tls_context(no_dh).get_ciphers() if c["name"].startswith("DHE-RSA")]
+    monkeypatch.setenv("S3_TLS_CIPHERS", "DEFAULT@SECLEVEL=1")
+    assert _tls_context(st.make_client(st.settings())).security_level == 1
+    monkeypatch.setenv("S3_TLS_CIPHERS", "")
+    assert _tls_context(st.make_client(st.settings())).security_level >= 2   # default untouched
+    assert _tls_context(no_dh) is not _tls_context(st.make_client(st.settings()))
+
+
+def test_a_cipher_string_openssl_refuses_is_a_setting_error(monkeypatch):
+    monkeypatch.setenv("S3_TLS_CIPHERS", "NO-SUCH-CIPHER")
+    assert any(m.startswith("S3_TLS_CIPHERS") for m in st.missing_settings(st.settings()))

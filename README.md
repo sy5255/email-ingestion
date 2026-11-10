@@ -108,6 +108,7 @@ python store_to_s3.py        # (선택) 업로드만 단독으로 1회: 수동 �
 S3_STORE_ENABLED=true
 S3_ENDPOINT_URL=https://s3.dataplatform.samsungds.net:9021
 S3_CA_BUNDLE=/config/work/email-ingestion/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
+S3_TLS_CIPHERS=DEFAULT@SECLEVEL=1   # DH_KEY_TOO_SMALL이 날 때만 (아래 설명)
 S3_REGION=KOR-HS
 S3_ACCESS_KEY_ID=…
 S3_SECRET_ACCESS_KEY=…
@@ -116,6 +117,11 @@ S3_BUCKET=Analysis_Report
 
 `S3_CA_BUNDLE`은 boto3에 `verify=`로 넘어갑니다. 경로에 파일이 없으면 업로드하지 않고 `[S3_STORE_ERROR]`로
 알립니다. 인증서 파일은 git에 올리지 않습니다(`.gitignore`).
+
+`[SSL: DH_KEY_TOO_SMALL] dh key too small`: 사내 S3 서버가 짧은 DH 키를 써서 최신 OpenSSL이 연결을 거부한
+것입니다(인증서 문제 아님). `S3_TLS_CIPHERS`로 이 S3 연결에만 암호 방식을 바꿉니다. 먼저 `DEFAULT:!kDHE`
+(DH 방식을 빼고 ECDHE 등으로 연결, 보안 수준 그대로)를 쓰고, handshake failure가 나면 서버가 DH 방식만
+지원하는 것이므로 `DEFAULT@SECLEVEL=1`(짧은 DH 키 허용)을 씁니다. 다른 HTTPS 연결에는 영향이 없습니다.
 
 S3 설정은 환경변수나 이 저장소의 `.env`에 둘 수 있습니다. `ingest_pop3.py`에서 부를 때 `.env`의 값은
 S3 설정을 읽는 데만 쓰고, 다른 설정(POP3·DB 등)에는 영향을 주지 않습니다. 환경변수가 있으면 환경변수가 우선입니다.

@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -91,6 +92,10 @@ def settings() -> Dict[str, Any]:
         # https endpoint with the company certificate: path to the CA bundle, handed to boto3 as
         # verify=. Empty: boto3's default certificates.
         "ca_bundle": get("S3_CA_BUNDLE"),
+        # OpenSSL cipher string for this S3 client only. The company S3 offers a DH key OpenSSL 3
+        # rejects (DH_KEY_TOO_SMALL): "DEFAULT:!kDHE" skips DH key exchange, "DEFAULT@SECLEVEL=1"
+        # accepts the short key. Empty: Python's defaults.
+        "tls_ciphers": get("S3_TLS_CIPHERS"),
         # {site} is the department: IFA/sharedworkspace, S3FA/sharedworkspace, …
         "prefix_template": get("S3_SITE_PREFIX_TEMPLATE", "{site}/sharedworkspace").strip("/"),
         "default_site": get("STORE_DEFAULT_SITE", "IFA").upper() or "IFA",
@@ -116,14 +121,32 @@ def missing_settings(cfg: Dict[str, Any]) -> List[str]:
     # A wrong certificate path is a setting to fix, not S3 being down: say so instead of retrying.
     if cfg.get("ca_bundle") and not Path(cfg["ca_bundle"]).is_file():
         missing.append(f"S3_CA_BUNDLE (no file at {cfg['ca_bundle']})")
+    if cfg.get("tls_ciphers"):
+        try:
+            ssl.create_default_context().set_ciphers(cfg["tls_ciphers"])
+        except ssl.SSLError:
+            missing.append(f"S3_TLS_CIPHERS (OpenSSL does not accept {cfg['tls_ciphers']!r})")
     return missing
+
+
+def apply_tls_ciphers(client, ciphers: str):
+    """Set the cipher string on this client's TLS context only (other HTTPS in the process keeps
+    the defaults). botocore has no setting for it, so this reaches the connection pool's context."""
+    if not ciphers:
+        return client
+    manager = client._endpoint.http_session._manager
+    context = manager.connection_pool_kw.get("ssl_context")
+    if context is None:
+        raise RuntimeError("S3_TLS_CIPHERS: this botocore version has no TLS context to change")
+    context.set_ciphers(ciphers)
+    return client
 
 
 def make_client(cfg: Dict[str, Any]):
     import boto3
     from botocore.config import Config
 
-    return boto3.client(
+    client = boto3.client(
         "s3",
         endpoint_url=cfg["endpoint_url"],
         region_name=cfg["region"],
@@ -135,6 +158,7 @@ def make_client(cfg: Dict[str, Any]):
                       retries={"max_attempts": 3, "mode": "standard"},
                       connect_timeout=10, read_timeout=60),
     )
+    return apply_tls_ciphers(client, cfg.get("tls_ciphers") or "")
 
 
 # =========================
