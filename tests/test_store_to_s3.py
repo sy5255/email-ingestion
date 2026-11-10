@@ -523,3 +523,83 @@ def test_a_refused_key_says_what_to_check():
             raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadBucket")
     with pytest.raises(st.S3Unavailable, match="S3_PROFILE"):
         st.check_reachable(Refusing(), "Analysis_Report")
+
+
+def test_uploads_sign_the_real_sha256_without_a_checksum_trailer(db_config, s3, monkeypatch):
+    """boto3 >= 1.36 sends STREAMING-UNSIGNED-PAYLOAD-TRAILER + a CRC32 trailer by default; the company
+    S3 refuses that (XAmzContentSHA256Mismatch). Our client must send the body's own sha256."""
+    import hashlib
+
+    _, save_root = s3
+    _archive(db_config, save_root, "sig", "[Inline FA Report] 서명")
+    cfg = st.settings()
+    cfg["endpoint_url"] = None                      # moto answers the default endpoint
+    client = st.make_client(cfg)
+    sent = []
+
+    def capture(request, **kw):
+        body = request.body or b""
+        if hasattr(body, "read"):
+            position = body.tell()
+            body, _ = body.read(), body.seek(position)
+        if isinstance(body, str):
+            body = body.encode()
+        sent.append((request.headers.get("X-Amz-Content-SHA256"), hashlib.sha256(body).hexdigest(),
+                     request.headers.get("Content-Encoding"), request.headers.get("X-Amz-Trailer")))
+    client.meta.events.register("before-send.s3.PutObject", capture)
+    assert st.run_once(_ps_cfg(db_config), client=client)["stored"] == 1
+    assert sent
+    for declared, actual, encoding, trailer in sent:
+        declared = declared.decode() if isinstance(declared, bytes) else declared
+        assert declared == actual and encoding is None and trailer is None
+
+
+def test_the_same_error_on_mail_after_mail_stops_the_pass(db_config, s3, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    client, save_root = s3
+    for n in range(5):
+        _archive(db_config, save_root, f"same{n}", f"[Inline FA Report] 반복 {n}")
+
+    def refuse(**kw):
+        raise ClientError({"Error": {"Code": "XAmzContentSHA256Mismatch", "Message": "mismatch"}}, "PutObject")
+    monkeypatch.setattr(client, "put_object", refuse)
+    counters = st.run_once(_ps_cfg(db_config), client=client)
+    assert counters["retry"] == 3 and counters["stopped_on_repeated_error"] == 1
+    assert sorted(_store_tasks(db_config)) == ["PENDING", "PENDING", "RETRY", "RETRY", "RETRY"]
+
+
+def test_ingest_leaves_s3_alone_for_the_rest_of_the_run_after_such_a_stop(db_config, ingest, monkeypatch, capsys):
+    ingest_pop3, at, client = ingest
+    monkeypatch.setattr(ingest_pop3, "_S3_PAUSED_REASON", "")
+    calls = []
+    monkeypatch.setattr(st, "run_once", lambda *a, **k: calls.append(1) or {"retry": 3, "stopped_on_repeated_error": 1})
+    at(4, 10)
+    ingest_pop3.run_once()
+    ingest_pop3.run_once()
+    assert len(calls) == 1 and "[S3_STORE_STOPPED]" in capsys.readouterr().out
+
+
+def test_store_reset_previews_then_puts_failed_uploads_back_to_the_start(db_config, s3, monkeypatch, tmp_path, capsys):
+    from botocore.exceptions import ClientError
+
+    import store_reset
+
+    client, save_root = s3
+    ids = [_archive(db_config, save_root, f"rs{n}", f"[Inline FA Report] 되돌리기 {n}") for n in range(2)]
+    monkeypatch.setattr(client, "put_object", lambda **kw: (_ for _ in ()).throw(
+        ClientError({"Error": {"Code": "XAmzContentSHA256Mismatch", "Message": "m"}}, "PutObject")))
+    st.run_once(_ps_cfg(db_config), client=client)
+    for name, value in (("MYSQL_HOST", db_config.host), ("MYSQL_PORT", str(db_config.port)),
+                        ("MYSQL_DATABASE", db_config.database), ("MYSQL_USER", db_config.user),
+                        ("MYSQL_PASSWORD", db_config.password)):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(st, "ENV_FILE", tmp_path / "none.env")
+
+    assert store_reset.main([]) == 0
+    assert "되돌릴 대상" in capsys.readouterr().out and _task(db_config, ids[0])["status"] == "RETRY"
+    assert store_reset.main(["--apply"]) == 0
+    for mail_id in ids:
+        task = _task(db_config, mail_id)
+        assert task["status"] == "PENDING" and task["attempt"] == 0 and task["last_error"] is None
+    assert store_reset.main([]) == 0 and "되돌릴 것이 없습니다" in capsys.readouterr().out

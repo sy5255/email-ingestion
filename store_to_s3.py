@@ -112,6 +112,8 @@ def settings() -> Dict[str, Any]:
         # A transient failure that did run out is retried again after this many hours (the next
         # night's window), with its count reset.
         "revive_hours": int(get("STORE_REVIVE_HOURS", "20")),
+        # The same error on this many mails in a row ends the pass (a setting or the store, not a mail).
+        "stop_after_same_errors": max(1, int(get("STORE_STOP_AFTER_SAME_ERRORS", "3"))),
         # keep: leave the local mail folder. after_parse: delete it once it is in S3 and doc-parser
         # has parsed it. after_store: as soon as it is in S3 (only once doc-parser reads from S3).
         "local_retention": get("LOCAL_MAIL_RETENTION", "keep").lower() or "keep",
@@ -182,7 +184,12 @@ def make_client(cfg: Dict[str, Any]):
         **keys,
         verify=cfg.get("ca_bundle") or None,      # None: boto3's default certificates
         config=Config(signature_version=cfg["signature_version"],
-                      s3={"addressing_style": cfg["addressing_style"]},
+                      # Sign the body's real sha256, as boto3 did before 1.36. Its newer default sends
+                      # "STREAMING-UNSIGNED-PAYLOAD-TRAILER" with a CRC32 trailer, which the company S3
+                      # refuses (XAmzContentSHA256Mismatch).
+                      s3={"addressing_style": cfg["addressing_style"], "payload_signing_enabled": True},
+                      request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required",
                       retries={"max_attempts": 3, "mode": "standard"},
                       connect_timeout=10, read_timeout=60),
     )
@@ -340,6 +347,13 @@ def check_reachable(client, bucket: str) -> None:
         client.head_bucket(Bucket=bucket)
     except Exception as exc:
         raise S3Unavailable(f"bucket {bucket}: {type(exc).__name__}: {exc}{_hint(exc)}") from exc
+
+
+def _error_signature(exc: BaseException) -> str:
+    """The error's kind, without the mail-specific part: the S3 error code when there is one."""
+    cause = exc.__cause__ or exc
+    code = getattr(cause, "response", {}).get("Error", {}).get("Code") if hasattr(cause, "response") else None
+    return f"{type(cause).__name__}:{code}" if code else type(cause).__name__
 
 
 def _hint(exc: BaseException) -> str:
@@ -594,6 +608,7 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
         run.incr("revived", revive_failed(db_cfg, cfg))
         run.incr("seeded", queue.seed(STAGE, seed_sql()))
         logger.info("STORE started run_id=%s bucket=%s counters=%s", run.run_id, cfg["bucket"], run.counters)
+        same_error, last_error = 0, None
         while True:
             if run.deadline_reached(cfg["claim_reserve_sec"]):
                 run.exit_reason = "TIME_BUDGET"
@@ -621,6 +636,18 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
                 status = queue.fail(task, exc)
                 run.incr("failed" if status == "FAILED" else "retry")
                 logger.warning("store failed mail_id=%s -> %s: %s", task.mail_id, status, exc)
+                signature = _error_signature(exc)
+                same_error = same_error + 1 if signature == last_error else 1
+                last_error = signature
+                if same_error >= cfg["stop_after_same_errors"]:
+                    # Not one bad mail but a setting or the store: stop instead of failing every mail.
+                    run.exit_reason = "REPEATED_ERROR"
+                    run.incr("stopped_on_repeated_error")
+                    logger.warning("the same error on %s mails in a row (%s); pass stops, fix it and run again",
+                                   same_error, signature)
+                    break
+                continue
+            same_error, last_error = 0, None
         if run.exit_reason != "S3_UNAVAILABLE":
             try:
                 run.incr("local_deleted", cleanup_local(client, cfg, db_cfg, run))

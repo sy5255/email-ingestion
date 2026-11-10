@@ -183,10 +183,16 @@ STORE_BUDGET_PER_RUN_SEC = int(os.getenv("STORE_BUDGET_PER_RUN_SEC", "300"))
 
 
 _S3_OFF_REPORTED = False
+# Set when a pass stopped on the same error over and over: a setting or the store, not a mail. The
+# rest of this run (the night loop passes every 60 seconds) leaves S3 alone instead of failing more.
+_S3_PAUSED_REASON = ""
 
 
 def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None:
     """Upload what the archive step saved. Never fails the ingestion run."""
+    global _S3_PAUSED_REASON
+    if _S3_PAUSED_REASON:
+        return
     try:
         result = store_to_s3.run_once(
             ps.DBConfig(host=db_config.host, port=db_config.port, database=db_config.database,
@@ -216,6 +222,10 @@ def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None
         missing = ", ".join(store_to_s3.missing_settings(store_to_s3.settings()))   # names only, never values
         print(f"[S3_STORE_ERROR] S3_STORE_ENABLED=true but S3 settings are missing or wrong: {missing}")
         return
+    if result.get("stopped_on_repeated_error"):
+        _S3_PAUSED_REASON = "the same error on several mails in a row"
+        print("[S3_STORE_STOPPED] the same S3 error on several mails in a row; S3 upload is off for the rest "
+              "of this run. See the warnings above, fix the setting, then reset with: python store_reset.py")
     for key in ("stored", "reused", "retry", "failed", "s3_unreachable", "local_deleted"):
         counters[key if key.startswith("s3_") else f"s3_{key}"] += int(result.get(key, 0) or 0)
     print("[S3_STORE] " + " ".join(f"{key}={value}" for key, value in sorted(result.items())))

@@ -141,6 +141,21 @@ S3 설정을 읽는 데만 쓰고, 다른 설정(POP3·DB 등)에는 영향을 �
 - S3에 이미 `_COMPLETE`가 있고 내용이 같으면 다시 올리지 않습니다. 로컬 폴더가 지워진 메일도
   S3의 `_COMPLETE`가 있으면 완료로 둡니다. 둘 다 없으면 영구 실패(FAILED)입니다.
 
+### 같은 오류가 계속 날 때
+
+같은 S3 오류가 메일 3건 연속(`STORE_STOP_AFTER_SAME_ERRORS`)으로 나면, 메일 문제가 아니라 설정이나 S3 문제로 보고
+그 회차를 멈춥니다. `ingest_pop3.py`는 `[S3_STORE_STOPPED]`를 남기고, 그 실행이 끝날 때까지 S3 업로드를 쉽니다.
+설정을 고친 뒤 실패 기록을 처음 상태로 되돌립니다(기본은 미리보기, `--apply` 때만 바꿈):
+
+```bash
+python store_reset.py                  # XAmzContentSHA256Mismatch로 실패한 것과 강제 중지로 PROCESSING에 남은 것
+python store_reset.py --apply
+python store_reset.py --error "SSLError" --apply   # 다른 오류 문구
+```
+
+메일 표·로컬 파일·완료된 업로드는 건드리지 않습니다. `XAmzContentSHA256Mismatch`는 boto3 1.36부터 바뀐 업로드
+방식(checksum trailer)을 사내 S3가 받지 않아 생기던 것으로, 지금 코드는 본문 sha256을 직접 서명해 보냅니다.
+
 ### S3가 밤에 죽어 있을 때
 
 - 업로드 전에 S3 버킷에 먼저 접속해 봅니다. 안 되면 메일을 하나도 건드리지 않고 넘어가고, 로그에
