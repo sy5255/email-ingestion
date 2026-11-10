@@ -429,7 +429,7 @@ def test_the_company_certificate_is_handed_to_boto3(tmp_path, monkeypatch):
     monkeypatch.setenv("S3_CA_BUNDLE", str(bundle))
     seen = {}
     import boto3
-    monkeypatch.setattr(boto3, "client", lambda *a, **kw: seen.update(kw) or object())
+    monkeypatch.setattr(boto3.session.Session, "client", lambda self, *a, **kw: seen.update(kw) or object())
     cfg = st.settings()
     st.make_client(cfg)
     assert seen["verify"] == str(bundle)
@@ -475,3 +475,51 @@ def test_the_cipher_setting_changes_only_the_s3_client(monkeypatch):
 def test_a_cipher_string_openssl_refuses_is_a_setting_error(monkeypatch):
     monkeypatch.setenv("S3_TLS_CIPHERS", "NO-SUCH-CIPHER")
     assert any(m.startswith("S3_TLS_CIPHERS") for m in st.missing_settings(st.settings()))
+
+
+
+def _profile_env(tmp_path, monkeypatch):
+    creds = tmp_path / "credentials"
+    creds.write_text("[org-analysis_science_n_eng_team]\naws_access_key_id = NSKEY\n"
+                     "aws_secret_access_key = NSSECRET\n", encoding="utf-8")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(creds))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+    for name, value in (("S3_ENDPOINT_URL", "https://s3.example:9021"), ("S3_REGION", "KOR-HS"),
+                        ("S3_BUCKET", "Analysis_Report"), ("S3_CA_BUNDLE", ""), ("S3_TLS_CIPHERS", ""),
+                        ("S3_ACCESS_KEY_ID", "OTHER"), ("S3_SECRET_ACCESS_KEY", "OTHERSECRET")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+
+def test_the_namespace_profile_signs_instead_of_the_env_keys(tmp_path, monkeypatch):
+    """The bucket belongs to a namespace; the aws CLI picked it with AWS_PROFILE."""
+    _profile_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("S3_PROFILE", "org-analysis_science_n_eng_team")
+    cfg = st.settings()
+    assert st.missing_settings(cfg) == []
+    assert st.make_client(cfg)._request_signer._credentials.access_key == "NSKEY"
+    monkeypatch.delenv("S3_PROFILE")
+    monkeypatch.setenv("AWS_PROFILE", "org-analysis_science_n_eng_team")    # the CLI's name works too
+    assert st.make_client(st.settings())._request_signer._credentials.access_key == "NSKEY"
+    monkeypatch.delenv("AWS_PROFILE")
+    assert st.make_client(st.settings())._request_signer._credentials.access_key == "OTHER"   # no profile
+
+
+def test_an_unknown_profile_is_a_setting_error(tmp_path, monkeypatch):
+    _profile_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("S3_PROFILE", "org-typo")
+    [problem] = st.missing_settings(st.settings())
+    assert problem.startswith("S3_PROFILE ('org-typo': ProfileNotFound") and "NSKEY" not in problem
+
+
+
+def test_a_refused_key_says_what_to_check():
+    from botocore.exceptions import ClientError
+
+    class Refusing:
+        def head_bucket(self, **kw):
+            raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadBucket")
+    with pytest.raises(st.S3Unavailable, match="S3_PROFILE"):
+        st.check_reachable(Refusing(), "Analysis_Report")

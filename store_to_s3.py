@@ -84,6 +84,10 @@ def settings() -> Dict[str, Any]:
         "enabled": get("S3_STORE_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
         "endpoint_url": get("S3_ENDPOINT_URL"),
         "region": get("S3_REGION") or None,
+        # A named profile in ~/.aws/credentials (the S3 drive's namespace, e.g. what
+        # `export AWS_PROFILE=org-…` picks for the aws CLI). Set: its keys are used and
+        # S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY are ignored.
+        "profile": get("S3_PROFILE") or get("AWS_PROFILE"),
         "access_key": get("S3_ACCESS_KEY_ID") or get("AWS_ACCESS_KEY_ID"),
         "secret_key": get("S3_SECRET_ACCESS_KEY") or get("AWS_SECRET_ACCESS_KEY"),
         "bucket": get("S3_BUCKET", "Analysis_Report"),
@@ -115,9 +119,14 @@ def settings() -> Dict[str, Any]:
 
 
 def missing_settings(cfg: Dict[str, Any]) -> List[str]:
-    missing = [name for name, key in (("S3_ENDPOINT_URL", "endpoint_url"), ("S3_ACCESS_KEY_ID", "access_key"),
-                                      ("S3_SECRET_ACCESS_KEY", "secret_key"), ("S3_BUCKET", "bucket"))
-               if not cfg.get(key)]
+    needed = [("S3_ENDPOINT_URL", "endpoint_url"), ("S3_BUCKET", "bucket")]
+    if not cfg.get("profile"):
+        needed += [("S3_ACCESS_KEY_ID", "access_key"), ("S3_SECRET_ACCESS_KEY", "secret_key")]
+    missing = [name for name, key in needed if not cfg.get(key)]
+    if cfg.get("profile"):
+        problem = _profile_problem(cfg["profile"])
+        if problem:
+            missing.append(f"S3_PROFILE ({problem})")
     # A wrong certificate path is a setting to fix, not S3 being down: say so instead of retrying.
     if cfg.get("ca_bundle") and not Path(cfg["ca_bundle"]).is_file():
         missing.append(f"S3_CA_BUNDLE (no file at {cfg['ca_bundle']})")
@@ -127,6 +136,20 @@ def missing_settings(cfg: Dict[str, Any]) -> List[str]:
         except ssl.SSLError:
             missing.append(f"S3_TLS_CIPHERS (OpenSSL does not accept {cfg['tls_ciphers']!r})")
     return missing
+
+
+def _profile_problem(profile: str) -> str:
+    """Why the named profile cannot sign requests, or "" (names only, never key values)."""
+    import boto3
+    from botocore.exceptions import BotoCoreError
+
+    try:
+        credentials = boto3.session.Session(profile_name=profile).get_credentials()
+    except BotoCoreError as exc:          # ProfileNotFound and friends
+        return f"{profile!r}: {type(exc).__name__} -- check ~/.aws/credentials of the user running the job"
+    if credentials is None or not credentials.access_key:
+        return f"{profile!r} has no access key"
+    return ""
 
 
 def apply_tls_ciphers(client, ciphers: str):
@@ -146,12 +169,17 @@ def make_client(cfg: Dict[str, Any]):
     import boto3
     from botocore.config import Config
 
-    client = boto3.client(
+    if cfg.get("profile"):
+        session = boto3.session.Session(profile_name=cfg["profile"])
+        keys = {}                                  # the profile's keys
+    else:
+        session = boto3.session.Session()
+        keys = {"aws_access_key_id": cfg["access_key"], "aws_secret_access_key": cfg["secret_key"]}
+    client = session.client(
         "s3",
         endpoint_url=cfg["endpoint_url"],
         region_name=cfg["region"],
-        aws_access_key_id=cfg["access_key"],
-        aws_secret_access_key=cfg["secret_key"],
+        **keys,
         verify=cfg.get("ca_bundle") or None,      # None: boto3's default certificates
         config=Config(signature_version=cfg["signature_version"],
                       s3={"addressing_style": cfg["addressing_style"]},
@@ -311,7 +339,19 @@ def check_reachable(client, bucket: str) -> None:
     try:
         client.head_bucket(Bucket=bucket)
     except Exception as exc:
-        raise S3Unavailable(f"bucket {bucket}: {type(exc).__name__}: {exc}") from exc
+        raise S3Unavailable(f"bucket {bucket}: {type(exc).__name__}: {exc}{_hint(exc)}") from exc
+
+
+def _hint(exc: BaseException) -> str:
+    text = str(exc)
+    if "DH_KEY_TOO_SMALL" in text:
+        return " -- set S3_TLS_CIPHERS (README: DH_KEY_TOO_SMALL)"
+    if "(403)" in text or "Forbidden" in text or "AccessDenied" in text or "InvalidAccessKeyId" in text:
+        return (" -- the keys were refused for this bucket: set S3_PROFILE to the bucket's namespace profile"
+                " (~/.aws/credentials), or put that namespace's keys in S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY")
+    if "SignatureDoesNotMatch" in text:
+        return " -- check S3_SECRET_ACCESS_KEY and S3_REGION"
+    return ""
 
 
 def put_verified(client, bucket: str, key: str, data: bytes) -> Dict[str, Any]:

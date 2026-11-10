@@ -110,10 +110,14 @@ S3_ENDPOINT_URL=https://s3.dataplatform.samsungds.net:9021
 S3_CA_BUNDLE=/config/work/email-ingestion/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
 S3_TLS_CIPHERS=DEFAULT@SECLEVEL=1   # DH_KEY_TOO_SMALL이 날 때만 (아래 설명)
 S3_REGION=KOR-HS
-S3_ACCESS_KEY_ID=…
-S3_SECRET_ACCESS_KEY=…
+S3_PROFILE=org-analysis_science_n_eng_team   # 버킷의 Namespace profile (키 두 줄 대신)
 S3_BUCKET=Analysis_Report
 ```
+
+`S3_PROFILE`: 버킷이 속한 Namespace의 profile 이름(aws CLI에서 `export AWS_PROFILE=…`로 고르던 것).
+키는 그 profile(`~/.aws/credentials`)에서 읽고 `S3_ACCESS_KEY_ID`·`S3_SECRET_ACCESS_KEY`는 쓰지 않습니다.
+잡을 돌리는 OS 사용자의 `~/.aws/credentials`에 그 profile이 있어야 합니다. HeadBucket 403 Forbidden은
+대개 다른 Namespace의 키로 접속했다는 뜻입니다.
 
 `S3_CA_BUNDLE`은 boto3에 `verify=`로 넘어갑니다. 경로에 파일이 없으면 업로드하지 않고 `[S3_STORE_ERROR]`로
 알립니다. 인증서 파일은 git에 올리지 않습니다(`.gitignore`).
