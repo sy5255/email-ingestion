@@ -88,6 +88,9 @@ def settings() -> Dict[str, Any]:
         "bucket": get("S3_BUCKET", "Analysis_Report"),
         "addressing_style": get("S3_ADDRESSING_STYLE", "path") or "path",
         "signature_version": get("S3_SIGNATURE_VERSION", "s3v4") or "s3v4",
+        # https endpoint with the company certificate: path to the CA bundle, handed to boto3 as
+        # verify=. Empty: boto3's default certificates.
+        "ca_bundle": get("S3_CA_BUNDLE"),
         # {site} is the department: IFA/sharedworkspace, S3FA/sharedworkspace, …
         "prefix_template": get("S3_SITE_PREFIX_TEMPLATE", "{site}/sharedworkspace").strip("/"),
         "default_site": get("STORE_DEFAULT_SITE", "IFA").upper() or "IFA",
@@ -107,9 +110,13 @@ def settings() -> Dict[str, Any]:
 
 
 def missing_settings(cfg: Dict[str, Any]) -> List[str]:
-    return [name for name, key in (("S3_ENDPOINT_URL", "endpoint_url"), ("S3_ACCESS_KEY_ID", "access_key"),
-                                   ("S3_SECRET_ACCESS_KEY", "secret_key"), ("S3_BUCKET", "bucket"))
-            if not cfg.get(key)]
+    missing = [name for name, key in (("S3_ENDPOINT_URL", "endpoint_url"), ("S3_ACCESS_KEY_ID", "access_key"),
+                                      ("S3_SECRET_ACCESS_KEY", "secret_key"), ("S3_BUCKET", "bucket"))
+               if not cfg.get(key)]
+    # A wrong certificate path is a setting to fix, not S3 being down: say so instead of retrying.
+    if cfg.get("ca_bundle") and not Path(cfg["ca_bundle"]).is_file():
+        missing.append(f"S3_CA_BUNDLE (no file at {cfg['ca_bundle']})")
+    return missing
 
 
 def make_client(cfg: Dict[str, Any]):
@@ -122,6 +129,7 @@ def make_client(cfg: Dict[str, Any]):
         region_name=cfg["region"],
         aws_access_key_id=cfg["access_key"],
         aws_secret_access_key=cfg["secret_key"],
+        verify=cfg.get("ca_bundle") or None,      # None: boto3's default certificates
         config=Config(signature_version=cfg["signature_version"],
                       s3={"addressing_style": cfg["addressing_style"]},
                       retries={"max_attempts": 3, "mode": "standard"},

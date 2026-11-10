@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# 사내 S3 인증서 (S3_CA_BUNDLE)
+*.crt

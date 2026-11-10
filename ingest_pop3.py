@@ -213,7 +213,8 @@ def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None
         return
     if result.get("misconfigured"):
         counters["s3_store_error"] += 1
-        print("[S3_STORE_ERROR] S3_STORE_ENABLED=true but S3 settings are missing")
+        missing = ", ".join(store_to_s3.missing_settings(store_to_s3.settings()))   # names only, never values
+        print(f"[S3_STORE_ERROR] S3_STORE_ENABLED=true but S3 settings are missing or wrong: {missing}")
         return
     for key in ("stored", "reused", "retry", "failed", "s3_unreachable", "local_deleted"):
         counters[key if key.startswith("s3_") else f"s3_{key}"] += int(result.get(key, 0) or 0)

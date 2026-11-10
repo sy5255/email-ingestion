@@ -106,12 +106,16 @@ python store_to_s3.py        # (선택) 업로드만 단독으로 1회: 수동 �
 
 ```env
 S3_STORE_ENABLED=true
-S3_ENDPOINT_URL=http://s3.dataplatform.samsungds.net:9020
+S3_ENDPOINT_URL=https://s3.dataplatform.samsungds.net:9021
+S3_CA_BUNDLE=/config/work/email-ingestion/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
 S3_REGION=KOR-HS
 S3_ACCESS_KEY_ID=…
 S3_SECRET_ACCESS_KEY=…
 S3_BUCKET=Analysis_Report
 ```
+
+`S3_CA_BUNDLE`은 boto3에 `verify=`로 넘어갑니다. 경로에 파일이 없으면 업로드하지 않고 `[S3_STORE_ERROR]`로
+알립니다. 인증서 파일은 git에 올리지 않습니다(`.gitignore`).
 
 S3 설정은 환경변수나 이 저장소의 `.env`에 둘 수 있습니다. `ingest_pop3.py`에서 부를 때 `.env`의 값은
 S3 설정을 읽는 데만 쓰고, 다른 설정(POP3·DB 등)에는 영향을 주지 않습니다. 환경변수가 있으면 환경변수가 우선입니다.

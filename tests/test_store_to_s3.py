@@ -421,3 +421,33 @@ def test_the_4am_run_says_when_s3_is_down(db_config, ingest, monkeypatch, capsys
     ingest_pop3.run_once()
     out = capsys.readouterr().out
     assert "[FILE_COMPLETED]" in out and "[S3_STORE_UNREACHABLE]" in out and "s3_unreachable=1" in out
+
+
+def test_the_company_certificate_is_handed_to_boto3(tmp_path, monkeypatch):
+    bundle = tmp_path / "ca-bundle.crt"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
+    monkeypatch.setenv("S3_CA_BUNDLE", str(bundle))
+    seen = {}
+    import boto3
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: seen.update(kw) or object())
+    cfg = st.settings()
+    st.make_client(cfg)
+    assert seen["verify"] == str(bundle)
+    monkeypatch.setenv("S3_CA_BUNDLE", "")
+    st.make_client(st.settings())
+    assert seen["verify"] is None                     # unset: boto3's default certificates
+
+
+def test_a_wrong_certificate_path_is_a_setting_error_not_an_outage(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("S3_STORE_ENABLED", "true")
+    for name, value in (("S3_ENDPOINT_URL", "https://s3.example:9021"), ("S3_ACCESS_KEY_ID", "k"),
+                        ("S3_SECRET_ACCESS_KEY", "s"), ("S3_BUCKET", "b"),
+                        ("S3_CA_BUNDLE", str(tmp_path / "missing.crt"))):
+        monkeypatch.setenv(name, value)
+    assert st.run_once() == {"misconfigured": 1}
+    import ingest_pop3
+    counters = ingest_pop3._new_counters()
+    ingest_pop3._store_archived_to_s3(ingest_pop3.DBConfig(host="h", port=1, database="d", user="u", password="p"),
+                                      counters)
+    out = capsys.readouterr().out
+    assert "S3_CA_BUNDLE (no file at" in out and counters["s3_store_error"] == 1
