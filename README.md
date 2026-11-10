@@ -166,4 +166,5 @@ WHERE stage='STORE' AND status IN ('RETRY','FAILED') ORDER BY updated_at DESC LI
 ```
 
 로그(`ingest_pop3.py` 04시대 회차): `[S3_STORE] stored=… reused=… retry=… failed=… revived=… local_deleted=…`,
-S3가 죽어 있었으면 `[S3_STORE_UNREACHABLE]`.
+S3가 죽어 있었으면 `[S3_STORE_UNREACHABLE]`. 업로드가 꺼져 있으면(`S3_STORE_ENABLED`가 true가 아님) `[S3_STORE_OFF]`(실행마다 한 번),
+다른 업로드(`store_to_s3.py`)가 돌고 있으면 `[S3_STORE_BUSY]`.

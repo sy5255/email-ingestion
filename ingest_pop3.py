@@ -182,6 +182,9 @@ def _retrieve_raw_mail(server: Any, message_no: int) -> bytes:
 STORE_BUDGET_PER_RUN_SEC = int(os.getenv("STORE_BUDGET_PER_RUN_SEC", "300"))
 
 
+_S3_OFF_REPORTED = False
+
+
 def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None:
     """Upload what the archive step saved. Never fails the ingestion run."""
     try:
@@ -195,6 +198,14 @@ def _store_archived_to_s3(db_config: DBConfig, counters: Dict[str, int]) -> None
         print(f"[S3_STORE_ERROR] {type(exc).__name__}: {exc}")
         return
     if result.get("disabled"):
+        global _S3_OFF_REPORTED
+        if not _S3_OFF_REPORTED:          # once per process: the night loop passes every 60 seconds
+            _S3_OFF_REPORTED = True
+            print(f"[S3_STORE_OFF] S3_STORE_ENABLED is not true (environment or {store_to_s3.ENV_FILE}); "
+                  "upload skipped")
+        return
+    if not result:
+        print("[S3_STORE_BUSY] another S3 upload run (store_to_s3.py) is active; this pass skipped it")
         return
     if result.get("s3_unreachable") and len(result) == 1:
         counters["s3_unreachable"] += 1

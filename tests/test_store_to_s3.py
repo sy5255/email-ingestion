@@ -280,12 +280,16 @@ def test_archive_only_uploads_too_and_s3_trouble_never_stops_ingestion(db_config
     assert "s3_store_error=1" in out
 
 
-def test_with_the_upload_off_the_4am_run_only_archives(db_config, ingest, monkeypatch):
+def test_with_the_upload_off_the_4am_run_only_archives(db_config, ingest, monkeypatch, capsys):
     ingest_pop3, at, client = ingest
     monkeypatch.setenv("S3_STORE_ENABLED", "false")
+    monkeypatch.setattr(ingest_pop3, "_S3_OFF_REPORTED", False)
     at(4, 10)
     ingest_pop3.run_once()
     assert _store_tasks(db_config) == [] and not _keys(client)
+    assert "[S3_STORE_OFF]" in capsys.readouterr().out     # off is said, not silent
+    ingest_pop3.run_once(archive_only=True)
+    assert "[S3_STORE_OFF]" not in capsys.readouterr().out  # once per process
 
 
 def test_s3_settings_can_sit_in_the_env_file_without_touching_the_rest(tmp_path, monkeypatch):
