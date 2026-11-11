@@ -187,8 +187,8 @@ python store_reset.py --error "SSLError" --apply   # 다른 오류 문구
   하나하나 대조합니다. 하나라도 다르거나 없으면 그 메일은 지우지 않습니다.
 - 지우는 것: 메일 폴더(`{report_kind}/{ver}/{메일 폴더}`)와 `raw/{raw_hash}.raw.eml`. 버전 `config.json`과
   manifest는 남깁니다.
-- 주의: doc-parser는 아직 로컬 `.enriched.eml`을 읽습니다(S3 읽기는 E3에서). 지운 뒤 같은 메일을 **다시 파싱**해야
-  하면 S3에서 받아 와야 하므로, E3 전까지는 `after_store` 대신 `after_parse`를 쓰세요.
+- doc-parser는 `PARSE_S3_ENABLED=true`(E3)이면 로컬 메일 폴더가 없는 메일을 S3에서 읽어 파싱합니다. 그게 켜져
+  있지 않으면 지운 메일을 다시 파싱할 수 없으니 `after_parse`만 쓰세요. 켜져 있어도 `after_parse`를 권장합니다.
 - Curator(report-search)는 로컬 첨부 폴더가 없는 메일의 이미지 목록을 STORE 기록에서 읽고, 이미지 파일은
   `WORKSPACE_BACKEND=s3`일 때 S3에서 읽습니다.
 - `S3_STORE_ENABLED`가 꺼져 있거나 S3 설정이 빠지면 아무것도 하지 않고 끝납니다.
