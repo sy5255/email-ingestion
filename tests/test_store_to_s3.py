@@ -73,6 +73,11 @@ def _task(db_config, mail_id):
     return row
 
 
+@pytest.fixture(autouse=True)
+def _fresh_clients(monkeypatch):
+    monkeypatch.setattr(st, "_CLIENTS", {})       # no client kept from another test
+
+
 @pytest.fixture
 def s3(monkeypatch, tmp_path):
     from moto import mock_aws
@@ -603,3 +608,20 @@ def test_store_reset_previews_then_puts_failed_uploads_back_to_the_start(db_conf
         task = _task(db_config, mail_id)
         assert task["status"] == "PENDING" and task["attempt"] == 0 and task["last_error"] is None
     assert store_reset.main([]) == 0 and "되돌릴 것이 없습니다" in capsys.readouterr().out
+
+
+
+def test_slowdown_is_absorbed_by_adaptive_retries_on_one_client_per_process(monkeypatch):
+    """SlowDown (Please reduce your request rate) used to end the pass after 3 tries."""
+    for name, value in (("S3_ENDPOINT_URL", "https://s3.example:9021"), ("S3_ACCESS_KEY_ID", "k"),
+                        ("S3_SECRET_ACCESS_KEY", "s"), ("S3_REGION", "KOR-HS"), ("S3_CA_BUNDLE", ""),
+                        ("S3_TLS_CIPHERS", ""), ("S3_PROFILE", "")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    cfg = st.settings()
+    client = st._shared_client(cfg)
+    assert client.meta.config.retries == {"total_max_attempts": 10, "mode": "adaptive"}
+    assert st._shared_client(st.settings()) is client       # the learned rate survives the next pass
+    monkeypatch.setenv("S3_RETRY_MAX_ATTEMPTS", "4")
+    other = st._shared_client(st.settings())
+    assert other is not client and other.meta.config.retries["total_max_attempts"] == 4

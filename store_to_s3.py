@@ -113,6 +113,9 @@ def settings() -> Dict[str, Any]:
         # night's window), with its count reset.
         "revive_hours": int(get("STORE_REVIVE_HOURS", "20")),
         # The same error on this many mails in a row ends the pass (a setting or the store, not a mail).
+        # Tries per S3 request (first try included) before the error reaches us; SlowDown waits longer
+        # each time.
+        "retry_max_attempts": max(1, int(get("S3_RETRY_MAX_ATTEMPTS", "10"))),
         "stop_after_same_errors": max(1, int(get("STORE_STOP_AFTER_SAME_ERRORS", "3"))),
         # keep: leave the local mail folder. after_parse: delete it once it is in S3 and doc-parser
         # has parsed it. after_store: as soon as it is in S3 (only once doc-parser reads from S3).
@@ -138,6 +141,21 @@ def missing_settings(cfg: Dict[str, Any]) -> List[str]:
         except ssl.SSLError:
             missing.append(f"S3_TLS_CIPHERS (OpenSSL does not accept {cfg['tls_ciphers']!r})")
     return missing
+
+
+_CLIENTS: Dict[tuple, Any] = {}
+
+
+def _shared_client(cfg: Dict[str, Any]):
+    """One client per S3 setting for the whole process: ingest_pop3.py calls run_once every 60 seconds,
+    and the adaptive retry mode remembers the request rate S3 accepted only inside one client."""
+    key = tuple(str(cfg.get(name)) for name in (
+        "endpoint_url", "region", "profile", "access_key", "secret_key", "ca_bundle", "tls_ciphers",
+        "addressing_style", "signature_version", "retry_max_attempts"))
+    if key not in _CLIENTS:
+        _CLIENTS.clear()
+        _CLIENTS[key] = make_client(cfg)
+    return _CLIENTS[key]
 
 
 def _profile_problem(profile: str) -> str:
@@ -190,7 +208,9 @@ def make_client(cfg: Dict[str, Any]):
                       s3={"addressing_style": cfg["addressing_style"], "payload_signing_enabled": True},
                       request_checksum_calculation="when_required",
                       response_checksum_validation="when_required",
-                      retries={"max_attempts": 3, "mode": "standard"},
+                      # adaptive: on SlowDown the client also slows its own request rate (and keeps it
+                      # down), instead of only retrying a few times and giving up.
+                      retries={"total_max_attempts": cfg.get("retry_max_attempts", 10), "mode": "adaptive"},
                       connect_timeout=10, read_timeout=60),
     )
     return apply_tls_ciphers(client, cfg.get("tls_ciphers") or "")
@@ -592,7 +612,7 @@ def run_once(db_cfg: Optional[ps.DBConfig] = None, *, client=None,
     if db_key not in _schema_ready:
         ps.ensure_schema(db_cfg)        # once per DB per process: ingest_pop3.py calls this every pass
         _schema_ready.add(db_key)
-    client = client or make_client(cfg)
+    client = client or _shared_client(cfg)
     try:
         check_reachable(client, cfg["bucket"])
     except S3Unavailable as exc:
