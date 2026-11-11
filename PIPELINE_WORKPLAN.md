@@ -172,14 +172,17 @@ WHERE id=…;
 - [x] P8-5b 개발 서버에서 `S3_STORE_ENABLED=true` + S3 설정 후 `RUN_ONCE=true python ingest_pop3.py --archive-only`로 확인 — **사용자** (2026-11-11, 5861건 전부 업로드)
 - [x] P8-5d 사내 S3 맞춤: https 인증서 `S3_CA_BUNDLE`, `DH_KEY_TOO_SMALL` 대응 `S3_TLS_CIPHERS`, Namespace profile `S3_PROFILE`, boto3 1.36+ checksum trailer 대신 본문 sha256 서명(XAmzContentSHA256Mismatch), SlowDown adaptive 재시도, 같은 오류 3건 연속이면 회차 멈춤, `store_reset.py`
 - [x] P8-6 doc-parser E3(`PARSE_S3_ENABLED`, 기본 꺼짐): 로컬 메일 폴더가 없으면 S3 사본(STORE `_COMPLETE`)에서 읽어 파싱(이미지 목록·asset_id 로컬과 같음), PARSE_STORE 단계(`parse_store.py`)가 `export_*`를 `{site}/sharedworkspace/parsing_archive/…`에 올리고 `_COMPLETE`. 지난 결과도 차례로 이관, 재파싱 시 이전 export 삭제. 로컬 결과는 유지 — doc-parser 829f028, 테스트 48건
-- [ ] P8-6b 개발 서버: `PARSE_S3_ENABLED=true` + S3 설정 → `python parse_store.py`로 지난 결과 이관 → PARSE 완료 수 = PARSE_STORE 완료 수 — **사용자**
+- [x] P8-6b 개발 서버: `PARSE_S3_ENABLED=true` + S3 설정 → `python parse_store.py`로 지난 결과 이관 → PARSE 완료 수 = PARSE_STORE 완료 수 — **사용자** (2026-11-11 일치, email-ingestion `LOCAL_MAIL_RETENTION=after_parse`로 변경)
 - [ ] P8-6c 문서 목록 표(`ae_llm_agent_archive_doc`)를 doc-parser가 직접 기록 — P8-7과 함께(같은 제목 처리)
-- [ ] P8-7 rag-preparer가 S3에서 읽고 S3에 씀(E4), 같은 제목은 최신 메일만 검색되게
+- [x] P8-7a rag-preparer E4-1(`RAG_S3_ENABLED`, 기본 꺼짐): 로컬 export가 없으면 PARSE_STORE 사본에서 읽어 전처리, PREP_STORE 단계(`prep_store.py`)가 raw/full/lite jsonl을 `{site}/sharedworkspace/preprocessed_jsonl/…`에 올리고 `_COMPLETE`, UPLOAD·CANDIDATE는 로컬이 없으면 S3 사본을 읽음. `s3_common.py`는 doc-parser와 같은 사본 — rag-preparer 4b20e72, 테스트 34건
+- [ ] P8-7b 개발 서버: `RAG_S3_ENABLED=true` + S3 설정 → `python prep_store.py`로 지난 결과 이관 → PREPROCESS 완료 수 = PREP_STORE 완료 수 — **사용자**
+- [ ] P8-7c 같은 제목은 최신 메일만 검색되게: 검색 API `delete-doc`으로 이전 메일 문서를 인덱스에서 삭제(E4-2)
 - [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
 
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-11 | P8-7a | rag-preparer | E4-1: S3에서 파싱 결과 읽기, 전처리 결과 S3 업로드(PREP_STORE), 테스트 34건 통과 |
 | 2026-11-11 | P8-6 | doc-parser | E3: S3에서 읽어 파싱, 파싱 결과 S3 업로드(PARSE_STORE), 테스트 48건 통과 |
 | 2026-11-11 | P8-5b·P8-5d | email-ingestion, report-search | 개발 서버 업로드 5861건 완료, 사내 S3 맞춤(인증서·cipher·profile·sha256 서명·SlowDown) |
 | 2026-11-05 | P8-5a·P8-5c | email-ingestion, report-search | S3 장애 시 다음 날 재업로드, 로컬 사본 삭제 옵션(LOCAL_MAIL_RETENTION), Curator 이미지 목록 대체 경로. 테스트 50건 통과 |
