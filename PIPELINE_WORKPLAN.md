@@ -177,12 +177,17 @@ WHERE id=…;
 - [x] P8-7a rag-preparer E4-1(`RAG_S3_ENABLED`, 기본 꺼짐): 로컬 export가 없으면 PARSE_STORE 사본에서 읽어 전처리, PREP_STORE 단계(`prep_store.py`)가 raw/full/lite jsonl을 `{site}/sharedworkspace/preprocessed_jsonl/…`에 올리고 `_COMPLETE`, UPLOAD·CANDIDATE는 로컬이 없으면 S3 사본을 읽음. `s3_common.py`는 doc-parser와 같은 사본 — rag-preparer 4b20e72, 테스트 34건
 - [x] P8-7b 개발 서버: `RAG_S3_ENABLED=true` + S3 설정 → `python prep_store.py`로 지난 결과 이관 → PREPROCESS 완료 수 = PREP_STORE 완료 수 — **사용자** (2026-11-12 일치)
 - [x] P8-7c 같은 제목은 최신 메일만 검색되게(E4-2, `RAG_DROP_SUPERSEDED`, 기본 꺼짐): 같은 인덱스·같은 제목 문서를 메일 단위로 비교해 이전 메일 문서를 `delete-doc`으로 삭제(UNINDEX 작업), 최근 메일 업로드 완료 뒤에만·직전 재확인, 다시 올리지 않음, `python drop_superseded.py` 미리보기 — rag-preparer 9add511, 테스트 45건
-- [ ] P8-7d 개발 서버: `python drop_superseded.py`로 미리보기 확인 → `RAG_DROP_SUPERSEDED=true` → 다음 회차 뒤 UNINDEX 현황 확인 — **사용자**
+- [x] P8-7d 개발 서버: `python drop_superseded.py`로 미리보기 확인 → `RAG_DROP_SUPERSEDED=true` → 다음 회차 뒤 UNINDEX 현황 확인 — **사용자** (2026-11-12 일치)
+- [x] P8-7e report-search Curator 아카이브 목록을 S3에서(`ARCHIVE_SOURCE=s3`) — report-search 6ad6ca5, 개발 서버 확인(mcp_check 20/20)
+- [x] P8-9 doc-parser 로컬 파싱 결과 정리(`PARSE_LOCAL_RETENTION`: keep/after_store/after_preprocess), S3와 파일별 sha256 대조 후 삭제, `python parse_store.py --preview-cleanup`, 백필이 다시 파싱하지 않게 — doc-parser 6a4811f·1dd5646, 테스트 56건
+- [ ] P8-9b 개발 서버: 미리보기 → `PARSE_LOCAL_RETENTION=after_preprocess` → 다음 회차 뒤 디스크 사용량 확인 — **사용자**
+- [ ] P8-10 rag-preparer 로컬 결과(`preprocessed_jsonl`) 정리 — report-search `tools/poc_export`·`tools/citation_replay.py`를 S3로 바꾼 뒤(G1)
 - [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
 
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-12 | P8-9 | doc-parser | 로컬 파싱 결과 정리(PARSE_LOCAL_RETENTION), 테스트 56건 통과 |
 | 2026-11-12 | P8-7c | rag-preparer | E4-2: 같은 제목 이전 메일 문서를 인덱스에서 삭제, 테스트 45건 통과 |
 | 2026-11-11 | P8-7a | rag-preparer | E4-1: S3에서 파싱 결과 읽기, 전처리 결과 S3 업로드(PREP_STORE), 테스트 34건 통과 |
 | 2026-11-11 | P8-6 | doc-parser | E3: S3에서 읽어 파싱, 파싱 결과 S3 업로드(PARSE_STORE), 테스트 48건 통과 |
