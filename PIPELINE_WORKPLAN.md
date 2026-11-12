@@ -175,13 +175,15 @@ WHERE id=…;
 - [x] P8-6b 개발 서버: `PARSE_S3_ENABLED=true` + S3 설정 → `python parse_store.py`로 지난 결과 이관 → PARSE 완료 수 = PARSE_STORE 완료 수 — **사용자** (2026-11-11 일치, email-ingestion `LOCAL_MAIL_RETENTION=after_parse`로 변경)
 - [ ] P8-6c 문서 목록 표(`ae_llm_agent_archive_doc`)를 doc-parser가 직접 기록 — P8-7과 함께(같은 제목 처리)
 - [x] P8-7a rag-preparer E4-1(`RAG_S3_ENABLED`, 기본 꺼짐): 로컬 export가 없으면 PARSE_STORE 사본에서 읽어 전처리, PREP_STORE 단계(`prep_store.py`)가 raw/full/lite jsonl을 `{site}/sharedworkspace/preprocessed_jsonl/…`에 올리고 `_COMPLETE`, UPLOAD·CANDIDATE는 로컬이 없으면 S3 사본을 읽음. `s3_common.py`는 doc-parser와 같은 사본 — rag-preparer 4b20e72, 테스트 34건
-- [ ] P8-7b 개발 서버: `RAG_S3_ENABLED=true` + S3 설정 → `python prep_store.py`로 지난 결과 이관 → PREPROCESS 완료 수 = PREP_STORE 완료 수 — **사용자**
-- [ ] P8-7c 같은 제목은 최신 메일만 검색되게: 검색 API `delete-doc`으로 이전 메일 문서를 인덱스에서 삭제(E4-2)
+- [x] P8-7b 개발 서버: `RAG_S3_ENABLED=true` + S3 설정 → `python prep_store.py`로 지난 결과 이관 → PREPROCESS 완료 수 = PREP_STORE 완료 수 — **사용자** (2026-11-12 일치)
+- [x] P8-7c 같은 제목은 최신 메일만 검색되게(E4-2, `RAG_DROP_SUPERSEDED`, 기본 꺼짐): 같은 인덱스·같은 제목 문서를 메일 단위로 비교해 이전 메일 문서를 `delete-doc`으로 삭제(UNINDEX 작업), 최근 메일 업로드 완료 뒤에만·직전 재확인, 다시 올리지 않음, `python drop_superseded.py` 미리보기 — rag-preparer 9add511, 테스트 45건
+- [ ] P8-7d 개발 서버: `python drop_superseded.py`로 미리보기 확인 → `RAG_DROP_SUPERSEDED=true` → 다음 회차 뒤 UNINDEX 현황 확인 — **사용자**
 - [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
 
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-12 | P8-7c | rag-preparer | E4-2: 같은 제목 이전 메일 문서를 인덱스에서 삭제, 테스트 45건 통과 |
 | 2026-11-11 | P8-7a | rag-preparer | E4-1: S3에서 파싱 결과 읽기, 전처리 결과 S3 업로드(PREP_STORE), 테스트 34건 통과 |
 | 2026-11-11 | P8-6 | doc-parser | E3: S3에서 읽어 파싱, 파싱 결과 S3 업로드(PARSE_STORE), 테스트 48건 통과 |
 | 2026-11-11 | P8-5b·P8-5d | email-ingestion, report-search | 개발 서버 업로드 5861건 완료, 사내 S3 맞춤(인증서·cipher·profile·sha256 서명·SlowDown) |
