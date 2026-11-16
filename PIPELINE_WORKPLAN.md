@@ -182,11 +182,15 @@ WHERE id=…;
 - [x] P8-9 doc-parser 로컬 파싱 결과 정리(`PARSE_LOCAL_RETENTION`: keep/after_store/after_preprocess), S3와 파일별 sha256 대조 후 삭제, `python parse_store.py --preview-cleanup`, 백필이 다시 파싱하지 않게 — doc-parser 6a4811f·1dd5646, 테스트 56건
 - [ ] P8-9b 개발 서버: 미리보기 → `PARSE_LOCAL_RETENTION=after_preprocess` → 다음 회차 뒤 디스크 사용량 확인 — **사용자**
 - [ ] P8-10 rag-preparer 로컬 결과(`preprocessed_jsonl`) 정리 — report-search `tools/poc_export`·`tools/citation_replay.py`를 S3로 바꾼 뒤(G1)
-- [ ] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 STORE 상태 추가
+- [x] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 S3 저장 단계: `s3_step`(STORE → PARSE_STORE → PREP_STORE 중 밀린 첫 단계, DONE, S3_OFF)과 단계별 상태·오류 — doc-parser 38de037 (3개 사본 같음)
+- [x] P8-8b 점검 명령 `report-search/tools/pipeline_status.py`(읽기 전용): 잡별 마지막 실행·나쁜 종료, 최근 실패·재시도·밀린 대기·멈춘 처리·많이 나온 오류, 오래 걸린 메일. 문제면 종료 코드 1 — report-search bde1f22
+- [ ] P8-8c 개발·운영 스케줄러에 `python tools/pipeline_status.py`를 1시간마다 걸고 로그 확인 — **사용자**
+- [x] P8-11 파싱 API 401(2026-11-12~14 새 메일 파싱 실패): 401·403이면 회차를 멈추고 시도 횟수를 쓰지 않음, `parse_store_reset.py --stage PARSE`, 키는 `.env`의 `DOC_PARSER_API_AUTH` — doc-parser 2c03a20, 복구 완료(2026-11-16)
 
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-16 | P8-8·P8-11 | 전체, report-search | 진행 현황 뷰 s3_step, 점검 명령 pipeline_status.py, 파싱 API 401 대응 |
 | 2026-11-12 | P8-9 | doc-parser | 로컬 파싱 결과 정리(PARSE_LOCAL_RETENTION), 테스트 56건 통과 |
 | 2026-11-12 | P8-7c | rag-preparer | E4-2: 같은 제목 이전 메일 문서를 인덱스에서 삭제, 테스트 45건 통과 |
 | 2026-11-11 | P8-7a | rag-preparer | E4-1: S3에서 파싱 결과 읽기, 전처리 결과 S3 업로드(PREP_STORE), 테스트 34건 통과 |
