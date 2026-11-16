@@ -181,7 +181,9 @@ WHERE id=…;
 - [x] P8-7e report-search Curator 아카이브 목록을 S3에서(`ARCHIVE_SOURCE=s3`) — report-search 6ad6ca5, 개발 서버 확인(mcp_check 20/20)
 - [x] P8-9 doc-parser 로컬 파싱 결과 정리(`PARSE_LOCAL_RETENTION`: keep/after_store/after_preprocess), S3와 파일별 sha256 대조 후 삭제, `python parse_store.py --preview-cleanup`, 백필이 다시 파싱하지 않게 — doc-parser 6a4811f·1dd5646, 테스트 56건
 - [ ] P8-9b 개발 서버: 미리보기 → `PARSE_LOCAL_RETENTION=after_preprocess` → 다음 회차 뒤 디스크 사용량 확인 — **사용자**
-- [ ] P8-10 rag-preparer 로컬 결과(`preprocessed_jsonl`) 정리 — report-search `tools/poc_export`·`tools/citation_replay.py`를 S3로 바꾼 뒤(G1)
+- [x] P8-10 rag-preparer 로컬 결과 정리(`RAG_LOCAL_RETENTION`: keep/after_store/after_upload), 원래 파일 시각(mtimes)을 PREP_STORE 기록에, `--record-mtimes`·`--preview-cleanup` — rag-preparer 0a9306e. doc-parser도 PARSE_STORE에 mtimes — doc-parser 7e180f6
+- [x] P8-10b report-search `tools/poc_export`·`citation_replay`가 S3에서 읽기(`--from-s3`, 원래 시각 복원) — report-search 74b84ab (G1)
+- [ ] P8-10c 개발 서버: `--record-mtimes --apply`(두 저장소, 로컬 파일이 있을 때 먼저) → 미리보기 → `CLEANUP_MAX=3` 시험 → 제한 해제 — **사용자**
 - [x] P8-8 진행 현황 뷰 `v_ae_llm_agent_pipeline_mail`에 S3 저장 단계: `s3_step`(STORE → PARSE_STORE → PREP_STORE 중 밀린 첫 단계, DONE, S3_OFF)과 단계별 상태·오류 — doc-parser 38de037 (3개 사본 같음)
 - [x] P8-8b 점검 명령 `report-search/tools/pipeline_status.py`(읽기 전용): 잡별 마지막 실행·나쁜 종료, 최근 실패·재시도·밀린 대기·멈춘 처리·많이 나온 오류, 오래 걸린 메일. 문제면 종료 코드 1 — report-search bde1f22
 - [ ] P8-8c 개발·운영 스케줄러에 `python tools/pipeline_status.py`를 1시간마다 걸고 로그 확인 — **사용자**
@@ -190,6 +192,7 @@ WHERE id=…;
 ## 5. 진행 기록
 | 날짜 | 항목 | 저장소 | 비고 |
 |---|---|---|---|
+| 2026-11-17 | P8-10 | rag-preparer, doc-parser, report-search | 로컬 전처리 결과 정리, 원래 파일 시각 기록, poc_export S3 읽기 |
 | 2026-11-16 | P8-8·P8-11 | 전체, report-search | 진행 현황 뷰 s3_step, 점검 명령 pipeline_status.py, 파싱 API 401 대응 |
 | 2026-11-12 | P8-9 | doc-parser | 로컬 파싱 결과 정리(PARSE_LOCAL_RETENTION), 테스트 56건 통과 |
 | 2026-11-12 | P8-7c | rag-preparer | E4-2: 같은 제목 이전 메일 문서를 인덱스에서 삭제, 테스트 45건 통과 |
