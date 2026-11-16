@@ -230,6 +230,8 @@ _DDL = [
 # - API_ANALYSIS : request-pipeline 분석(status) → 메일 발송(send_status)
 # - CONFLICT     : 같은 우선순위 규칙이 여러 개 매칭되어 사람이 확인해야 하는 메일
 # current_step 은 "지금 어디에 있는지"를 한 값으로 요약합니다. (예: PARSE:RETRY, SEND:SENT, DONE)
+# s3_step 은 S3 저장 단계(STORE → PARSE_STORE → PREP_STORE)에서 밀린 첫 단계입니다. 본 흐름(current_step)을
+# 막지는 않지만, 밀리면 로컬 정리·S3 읽기가 그 메일에서 멈춥니다. S3_OFF: 그 메일에 S3 단계 기록이 하나도 없음.
 _UPLOAD_COUNT = (
     "(SELECT COUNT(*) FROM `{task}` u WHERE u.mail_id = m.id AND u.stage = 'UPLOAD'{extra})"
 )
@@ -277,6 +279,25 @@ SELECT
     pp.quality AS preprocess_quality,
     pp.last_error AS preprocess_error,
     c.status AS candidate_status,
+
+    -- S3 저장 단계 (email-ingestion STORE, doc-parser PARSE_STORE, rag-preparer PREP_STORE)
+    CASE
+        WHEN m.route_type <> 'FILE_ARCHIVE' OR m.status <> 'COMPLETED' THEN NULL
+        WHEN st.id IS NULL AND ps.id IS NULL AND prs.id IS NULL THEN 'S3_OFF'
+        WHEN st.id IS NULL THEN 'STORE:NOT_SEEDED'
+        WHEN st.status <> 'COMPLETED' THEN CONCAT('STORE:', st.status)
+        WHEN p.status = 'COMPLETED' AND ps.id IS NULL THEN 'PARSE_STORE:NOT_SEEDED'
+        WHEN ps.id IS NOT NULL AND ps.status <> 'COMPLETED' THEN CONCAT('PARSE_STORE:', ps.status)
+        WHEN pp.status = 'COMPLETED' AND prs.id IS NULL THEN 'PREP_STORE:NOT_SEEDED'
+        WHEN prs.id IS NOT NULL AND prs.status <> 'COMPLETED' THEN CONCAT('PREP_STORE:', prs.status)
+        ELSE 'DONE'
+    END AS s3_step,
+    st.status AS store_status,
+    st.last_error AS store_error,
+    ps.status AS parse_store_status,
+    ps.last_error AS parse_store_error,
+    prs.status AS prep_store_status,
+    prs.last_error AS prep_store_error,
     {_upload_count()} AS upload_total,
     {_upload_count(" AND u.status = 'COMPLETED'")} AS upload_completed,
     {_upload_count(" AND u.status = 'FAILED'")} AS upload_failed,
@@ -293,12 +314,18 @@ SELECT
         COALESCE(m.updated_at, '1970-01-01'),
         COALESCE(p.updated_at, '1970-01-01'),
         COALESCE(pp.updated_at, '1970-01-01'),
-        COALESCE(c.updated_at, '1970-01-01')
+        COALESCE(c.updated_at, '1970-01-01'),
+        COALESCE(st.updated_at, '1970-01-01'),
+        COALESCE(ps.updated_at, '1970-01-01'),
+        COALESCE(prs.updated_at, '1970-01-01')
     ) AS last_updated_at
 FROM `{MAIL_TABLE}` m
 LEFT JOIN `{TASK_TABLE}` p  ON p.mail_id = m.id  AND p.stage = 'PARSE'      AND p.item_key = ''
 LEFT JOIN `{TASK_TABLE}` pp ON pp.mail_id = m.id AND pp.stage = 'PREPROCESS' AND pp.item_key = ''
 LEFT JOIN `{TASK_TABLE}` c  ON c.mail_id = m.id  AND c.stage = 'CANDIDATE'  AND c.item_key = ''
+LEFT JOIN `{TASK_TABLE}` st  ON st.mail_id = m.id  AND st.stage = 'STORE'       AND st.item_key = ''
+LEFT JOIN `{TASK_TABLE}` ps  ON ps.mail_id = m.id  AND ps.stage = 'PARSE_STORE' AND ps.item_key = ''
+LEFT JOIN `{TASK_TABLE}` prs ON prs.mail_id = m.id AND prs.stage = 'PREP_STORE' AND prs.item_key = ''
 WHERE m.route_type IN ('FILE_ARCHIVE', 'API_ANALYSIS', 'CONFLICT')
 """
 
