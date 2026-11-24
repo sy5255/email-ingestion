@@ -107,7 +107,7 @@ python store_to_s3.py        # (선택) 업로드만 단독으로 1회: 수동 �
 ```env
 S3_STORE_ENABLED=true
 S3_ENDPOINT_URL=https://s3.dataplatform.samsungds.net:9021
-S3_CA_BUNDLE=/config/work/email-ingestion/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
+S3_CA_BUNDLE=/config/work/sharedworkspace/certs/ca-bundle.crt   # https일 때 사내 인증서 파일 절대 경로
 S3_TLS_CIPHERS=DEFAULT@SECLEVEL=1   # DH_KEY_TOO_SMALL이 날 때만 (아래 설명)
 S3_REGION=KOR-HS
 S3_PROFILE=org-analysis_science_n_eng_team   # 버킷의 Namespace profile (키 두 줄 대신)
@@ -120,7 +120,8 @@ S3_BUCKET=Analysis_Report
 대개 다른 Namespace의 키로 접속했다는 뜻입니다.
 
 `S3_CA_BUNDLE`은 boto3에 `verify=`로 넘어갑니다. 경로에 파일이 없으면 업로드하지 않고 `[S3_STORE_ERROR]`로
-알립니다. 인증서 파일은 git에 올리지 않습니다(`.gitignore`).
+알립니다. 인증서 파일은 git에 올리지 않습니다(`.gitignore`). 그래서 저장소(배포) 폴더 안에 두면 재배포 때
+사라집니다: 다섯 프로그램이 같이 쓰는 `/config/work/sharedworkspace/certs/`에 둡니다.
 
 `[SSL: DH_KEY_TOO_SMALL] dh key too small`: 사내 S3 서버가 짧은 DH 키를 써서 최신 OpenSSL이 연결을 거부한
 것입니다(인증서 문제 아님). `S3_TLS_CIPHERS`로 이 S3 연결에만 암호 방식을 바꿉니다. 먼저 `DEFAULT:!kDHE`
